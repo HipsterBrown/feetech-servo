@@ -1,3 +1,4 @@
+// Unit tests
 package main
 
 import (
@@ -134,30 +135,48 @@ func TestServoModelLookup(t *testing.T) {
 	}
 }
 
-func TestBaudRateValue(t *testing.T) {
+func TestOperatingModeConstants(t *testing.T) {
+	// Test that operating mode constants are defined correctly
+	if OperatingModePosition != 0 {
+		t.Errorf("Expected OperatingModePosition to be 0, got %d", OperatingModePosition)
+	}
+	if OperatingModeVelocity != 1 {
+		t.Errorf("Expected OperatingModeVelocity to be 1, got %d", OperatingModeVelocity)
+	}
+	if OperatingModePWM != 2 {
+		t.Errorf("Expected OperatingModePWM to be 2, got %d", OperatingModePWM)
+	}
+	if OperatingModeStep != 3 {
+		t.Errorf("Expected OperatingModeStep to be 3, got %d", OperatingModeStep)
+	}
+}
+
+func TestRegisterNameLookup(t *testing.T) {
 	model, _ := GetModel("sts3215")
 
-	tests := []struct {
-		baudRate int
-		expected byte
-		found    bool
-	}{
-		{1000000, 0, true},
-		{500000, 1, true},
-		{115200, 4, true},
-		{9600, 0, false}, // Not supported
+	// Test some key registers exist
+	registers := []string{
+		"model_number",
+		"torque_enable",
+		"goal_position",
+		"present_position",
+		"operating_mode",
+		"present_voltage",
+		"present_temperature",
 	}
 
-	for _, tt := range tests {
-		t.Run(string(rune(tt.baudRate)), func(t *testing.T) {
-			value, found := model.BaudRateValue(tt.baudRate)
-			if found != tt.found {
-				t.Errorf("BaudRateValue(%d) found = %v, want %v", tt.baudRate, found, tt.found)
-			}
-			if found && value != tt.expected {
-				t.Errorf("BaudRateValue(%d) = %d, want %d", tt.baudRate, value, tt.expected)
-			}
-		})
+	for _, regName := range registers {
+		addrInfo, ok := model.AddressMap[regName]
+		if !ok {
+			t.Errorf("Expected to find register '%s' in STS3215 model", regName)
+			continue
+		}
+		if addrInfo.Address == 0 && regName != "some_zero_address_register" {
+			t.Errorf("Register '%s' has suspicious zero address", regName)
+		}
+		if addrInfo.Size == 0 {
+			t.Errorf("Register '%s' has zero size", regName)
+		}
 	}
 }
 

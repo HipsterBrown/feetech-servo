@@ -12,13 +12,17 @@ A Go package for communicating with Feetech servo motors using serial communicat
 - **Structured error handling**: Custom error types with proper error wrapping
 - **Model-based register access**: Type-safe register operations using servo specifications
 - **Bulk operations**: Efficient synchronized control of multiple servos
+- **Motor calibration system**: Position normalization with homing offsets and drive mode inversion
+- **Multiple normalization modes**: Raw values, percentages, and degrees
 - **Resource management**: Proper cleanup with explicit Close() methods
-- **Comprehensive testing**: Unit tests and benchmarks included
 
 ## Supported Hardware
 
 Currently supports:
 - **STS3215**: 12-bit resolution servo with 0-4095 position range
+- **STS3250**: Enhanced version of STS3215
+- **SCS0009**: 10-bit resolution servo for Protocol 1
+- **SM8512BL**: 16-bit resolution servo
 - Protocol 0 and Protocol 1 communication
 
 Easy to extend for additional Feetech servo models.
@@ -55,25 +59,120 @@ func main() {
     defer bus.Close()
 
     // Create a servo instance
-    servo := bus.Servo(1) // Servo with ID 1
+    servo := bus.Servo(1) // Servo with ID 1 (defaults to STS3215)
 
-    // Ping the servo to verify connection
-    modelNum, err := servo.Ping()
+    // Ping the servo and auto-detect model
+    modelNum, err := servo.PingAndDetect()
     if err != nil {
         log.Fatal("Failed to ping servo:", err)
     }
-    log.Printf("Connected to servo model: %d", modelNum)
+    log.Printf("Connected to servo model: %s (number: %d)", servo.Model, modelNum)
 
     // Enable torque and move to center position
     if err := servo.SetTorqueEnable(true); err != nil {
         log.Fatal("Failed to enable torque:", err)
     }
 
-    if err := servo.WritePosition(2048); err != nil {
+    if err := servo.WritePosition(2048.0, false); err != nil { // Raw position
         log.Fatal("Failed to write position:", err)
     }
 
     log.Println("Servo moved to center position")
+}
+```
+
+## Motor Calibration
+
+The package includes a comprehensive calibration system for robotics applications:
+
+### Calibration File Format
+
+Calibrations are stored in JSON format with motor names as keys:
+
+```json
+{
+    "shoulder_pan": {
+        "id": 1,
+        "drive_mode": 0,
+        "homing_offset": -1470,
+        "range_min": 758,
+        "range_max": 3292
+    },
+    "gripper": {
+        "id": 6,
+        "drive_mode": 0,
+        "homing_offset": 1407,
+        "range_min": 2031,
+        "range_max": 3476,
+        "norm_mode": 1
+    }
+}
+```
+
+### Calibration Parameters
+
+- **`id`**: Servo ID on the bus
+- **`drive_mode`**: 0=normal direction, 1=inverted
+- **`homing_offset`**: Firmware offset written to servo register
+- **`range_min`**: Minimum usable position (after homing offset)
+- **`range_max`**: Maximum usable position (after homing offset)
+- **`norm_mode`**: Normalization mode (optional, defaults to degrees)
+
+### Normalization Modes
+
+- **0 (Raw)**: Raw servo values (0-4095)
+- **1 (Range100)**: 0-100% range (good for grippers)
+- **2 (RangeM100)**: -100 to +100 range
+- **3 (Degrees)**: -180° to +180° range (default, good for joints)
+
+### Using Calibrations
+
+```go
+package main
+
+import (
+    "log"
+    "github.com/hipsterbrown/feetech-servo"
+)
+
+func main() {
+    // Load calibrations from file
+    calibrations, err := feetech.LoadCalibrations("robot_cal.json")
+    if err != nil {
+        log.Fatal("Failed to load calibrations:", err)
+    }
+
+    // Create bus with calibrations
+    bus, err := feetech.NewBus(feetech.BusConfig{
+        Port:         "/dev/ttyUSB0",
+        Baudrate:     1000000,
+        Protocol:     feetech.ProtocolV0,
+        Calibrations: calibrations,
+    })
+    if err != nil {
+        log.Fatal("Failed to create bus:", err)
+    }
+    defer bus.Close()
+
+    // Initialize servos with homing offsets
+    for id, cal := range calibrations {
+        servo := bus.Servo(id)
+        
+        // Apply homing offset to servo firmware
+        if err := cal.ApplyHomingOffset(servo); err != nil {
+            log.Printf("Warning: Failed to apply homing offset for servo %d: %v", id, err)
+        }
+        
+        // Enable torque
+        servo.SetTorqueEnable(true)
+    }
+
+    // Use normalized positioning
+    shoulderPan := bus.Servo(1)
+    shoulderPan.WritePosition(45.0, true) // Move to 45 degrees (normalized)
+    
+    gripper := bus.Servo(6)
+    gripper.WritePosition(75.0, true) // Move to 75% open (normalized)
 }
 ```
 
@@ -91,11 +190,22 @@ type Bus struct {
 // Create a new bus
 func NewBus(config BusConfig) (*Bus, error)
 
-// Create a servo instance for the given ID  
+// Create a servo instance for the given ID (defaults to STS3215 model)
 func (b *Bus) Servo(id int) *Servo
 
+// Create a servo instance with a specific model
+func (b *Bus) ServoWithModel(id int, model string) (*Servo, error)
+
 // Synchronously write positions to multiple servos
-func (b *Bus) SyncWritePositions(servos []*Servo, positions []int) error
+func (b *Bus) SyncWritePositions(servos []*Servo, positions []float64, normalize bool) error
+
+// Synchronously read positions from multiple servos
+func (b *Bus) SyncReadPositions(servos []*Servo, normalize bool) (map[int]float64, error)
+
+// Calibration management
+func (b *Bus) SetCalibration(servoID int, calibration *MotorCalibration)
+func (b *Bus) GetCalibration(servoID int) (*MotorCalibration, bool)
+func (b *Bus) IsCalibrated(servoID int) bool
 
 // Close the bus and release resources
 func (b *Bus) Close() error
@@ -114,15 +224,21 @@ type Servo struct {
 
 // Basic operations
 func (s *Servo) Ping() (int, error)
-func (s *Servo) ReadPosition() (int, error)
-func (s *Servo) WritePosition(position int) error
-func (s *Servo) ReadVelocity() (int, error)
-func (s *Servo) WriteVelocity(velocity int) error
+func (s *Servo) PingAndDetect() (int, error)  // Ping and auto-detect model
+func (s *Servo) ReadPosition(normalize bool) (float64, error)
+func (s *Servo) WritePosition(position float64, normalize bool) error
+func (s *Servo) ReadVelocity(normalize bool) (float64, error)
+func (s *Servo) WriteVelocity(velocity float64, normalize bool) error
 
 // Control operations
 func (s *Servo) SetTorqueEnable(enable bool) error
 func (s *Servo) IsMoving() (bool, error)
 func (s *Servo) SetOperatingMode(mode byte) error
+func (s *Servo) GetOperatingMode() (byte, error)
+
+// Model operations
+func (s *Servo) DetectModel() error
+func (s *Servo) GetModelInfo() (map[string]interface{}, error)
 
 // Model-based register access
 func (s *Servo) ReadRegisterByName(name string) ([]byte, error)
@@ -133,23 +249,145 @@ func (s *Servo) WriteRegisterByName(name string, data []byte) error
 
 ```go
 type BusConfig struct {
-    Port     string        // Serial port path (e.g., "/dev/ttyUSB0")
-    Baudrate int           // Communication speed (default: 1000000)
-    Protocol int           // Protocol version: ProtocolV0 or ProtocolV1
-    Timeout  time.Duration // Communication timeout (default: 1 second)
+    Port         string                        // Serial port path (e.g., "/dev/ttyUSB0")
+    Baudrate     int                           // Communication speed (default: 1000000)
+    Protocol     int                           // Protocol version: ProtocolV0 or ProtocolV1
+    Timeout      time.Duration                 // Communication timeout (default: 1 second)
+    Calibrations map[int]*MotorCalibration     // Optional motor calibrations
 }
 ```
 
-## Examples
+## Working with Different Servo Models
 
-### Single Servo Control
+The package supports multiple servo models with different capabilities:
+
+### Supported Models
+
+- **STS3215**: 12-bit resolution (0-4095), Protocol 0, most common
+- **STS3250**: Enhanced version of STS3215, same register layout
+- **SCS0009**: 10-bit resolution (0-1023), Protocol 1, different register layout  
+- **SM8512BL**: 16-bit resolution (0-65535), Protocol 0, high precision
+
+### Creating Servos with Specific Models
 
 ```go
-func singleServoExample() {
+// Method 1: Default model (STS3215)
+servo := bus.Servo(1)
+servo.Model // "sts3215"
+
+// Method 2: Specify model explicitly
+servo, err := bus.ServoWithModel(1, "scs0009")
+if err != nil {
+    log.Fatal("Invalid model:", err)
+}
+
+// Method 3: Auto-detect model from hardware
+servo := bus.Servo(1)
+modelNum, err := servo.PingAndDetect()
+if err != nil {
+    log.Fatal("Failed to detect model:", err)
+}
+fmt.Printf("Detected model: %s (number: %d)\n", servo.Model, modelNum)
+
+// Method 4: Detect model separately
+servo := bus.Servo(1)
+err := servo.DetectModel()
+if err != nil {
+    log.Fatal("Failed to detect model:", err)
+}
+```
+
+### Model Information
+
+```go
+// Get detailed model information
+servo, _ := bus.ServoWithModel(1, "sts3215")
+info, err := servo.GetModelInfo()
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Model: %s\n", info["name"])
+fmt.Printf("Resolution: %d\n", info["resolution"])
+fmt.Printf("Max Position: %d\n", info["max_position"])
+fmt.Printf("Protocol: %d\n", info["protocol"])
+```
+
+### Multi-Model Bus Example
+
+```go
+func multiModelExample() {
+    bus, err := feetech.NewBus(feetech.BusConfig{
+        Port:     "/dev/ttyUSB0",
+        Protocol: feetech.ProtocolV0, // Both protocols supported
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer bus.Close()
+
+    // Create servos with known models
+    sts3215, err := bus.ServoWithModel(1, "sts3215")
+    if err != nil {
+        log.Fatal(err)
+    }
+    
+    scs0009, err := bus.ServoWithModel(2, "scs0009")
+    if err != nil {
+        log.Fatal(err)
+    }
+    
+    highRes, err := bus.ServoWithModel(3, "sm8512bl")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Auto-detect unknown servo
+    unknownServo := bus.Servo(4)
+    modelNum, err := unknownServo.PingAndDetect()
+    if err != nil {
+        log.Printf("Servo 4 not responding: %v", err)
+    } else {
+        fmt.Printf("Servo 4 is model: %s (number: %d)\n", unknownServo.Model, modelNum)
+    }
+
+    // Use model-specific features
+    // STS3215: 12-bit precision
+    sts3215.WritePosition(2048.0, false) // Middle position
+    
+    // SCS0009: 10-bit precision, different registers
+    scs0009.WriteRegisterByName("running_time", []byte{0x00, 0x32}) // Uses SCS0009 register map
+    
+    // SM8512BL: 16-bit precision
+    highRes.WritePosition(32768.0, false) // Middle position with high precision
+}
+```
+
+### Important Notes
+
+- **Register Access**: `ReadRegisterByName` and `WriteRegisterByName` require the correct model to be set
+- **Protocol Compatibility**: SCS0009 uses Protocol 1, others use Protocol 0
+- **Resolution Differences**: Position values scale with model resolution
+- **Model Detection**: Use `PingAndDetect()` for unknown servos or mixed installations
+
+## Examples
+
+### Single Servo Control with Calibration
+
+```go
+func calibratedServoExample() {
+    // Create calibration
+    cal := feetech.NewMotorCalibration(1)
+    cal.RangeMin = 758
+    cal.RangeMax = 3292
+    cal.HomingOffset = -1470
+    cal.NormMode = feetech.NormModeDegrees
+
     bus, err := feetech.NewBus(feetech.BusConfig{
         Port:     "/dev/ttyUSB0",
         Baudrate: 1000000,
         Protocol: feetech.ProtocolV0,
+        Calibrations: map[int]*feetech.MotorCalibration{1: cal},
     })
     if err != nil {
         log.Fatal(err)
@@ -158,19 +396,22 @@ func singleServoExample() {
 
     servo := bus.Servo(1)
     
+    // Apply homing offset to servo
+    cal.ApplyHomingOffset(servo)
+    
     // Set to position control mode
     servo.SetOperatingMode(feetech.OperatingModePosition)
     servo.SetTorqueEnable(true)
     
-    // Read current position
-    pos, err := servo.ReadPosition()
+    // Read current position (normalized to degrees)
+    pos, err := servo.ReadPosition(true)
     if err != nil {
         log.Fatal(err)
     }
-    log.Printf("Current position: %d", pos)
+    log.Printf("Current position: %.1f degrees", pos)
     
-    // Move to new position
-    servo.WritePosition(3000)
+    // Move to new position using normalized coordinates
+    servo.WritePosition(90.0, true) // 90 degrees
     
     // Wait for movement to complete
     for {
@@ -191,43 +432,60 @@ type RobotArm struct {
     servos []*feetech.Servo
 }
 
-func NewRobotArm(port string, servoIDs []int) (*RobotArm, error) {
+func NewRobotArm(port string, calibrationFile string) (*RobotArm, error) {
+    // Load calibrations
+    calibrations, err := feetech.LoadCalibrations(calibrationFile)
+    if err != nil {
+        return nil, err
+    }
+
     bus, err := feetech.NewBus(feetech.BusConfig{
-        Port:     port,
-        Baudrate: 1000000,
-        Protocol: feetech.ProtocolV0,
+        Port:         port,
+        Baudrate:     1000000,
+        Protocol:     feetech.ProtocolV0,
+        Calibrations: calibrations,
     })
     if err != nil {
         return nil, err
     }
 
-    servos := make([]*feetech.Servo, len(servoIDs))
-    for i, id := range servoIDs {
-        servos[i] = bus.Servo(id)
+    var servos []*feetech.Servo
+    for id, cal := range calibrations {
+        servo := bus.Servo(id)
         
-        // Initialize each servo
-        servos[i].SetOperatingMode(feetech.OperatingModePosition)
-        servos[i].SetTorqueEnable(true)
+        // Apply homing offset
+        if err := cal.ApplyHomingOffset(servo); err != nil {
+            log.Printf("Warning: Failed to apply homing offset for servo %d", id)
+        }
+        
+        // Initialize servo
+        servo.SetOperatingMode(feetech.OperatingModePosition)
+        servo.SetTorqueEnable(true)
+        
+        servos = append(servos, servo)
     }
 
     return &RobotArm{bus: bus, servos: servos}, nil
 }
 
-func (r *RobotArm) MoveToPositions(positions []int) error {
-    // Move all joints simultaneously using sync write
-    return r.bus.SyncWritePositions(r.servos, positions)
+func (r *RobotArm) MoveToAngles(angles map[int]float64) error {
+    // Move specific joints to target angles (normalized)
+    for servoID, angle := range angles {
+        for _, servo := range r.servos {
+            if servo.ID == servoID {
+                if err := servo.WritePosition(angle, true); err != nil {
+                    return err
+                }
+                break
+            }
+        }
+    }
+    return nil
 }
 
-func (r *RobotArm) GetJointPositions() ([]int, error) {
-    positions := make([]int, len(r.servos))
-    for i, servo := range r.servos {
-        pos, err := servo.ReadPosition()
-        if err != nil {
-            return nil, err
-        }
-        positions[i] = pos
-    }
-    return positions, nil
+func (r *RobotArm) GetJointAngles() (map[int]float64, error) {
+    // Use sync read for efficient position reading
+    return r.bus.SyncReadPositions(r.servos, true)
 }
 
 func (r *RobotArm) Close() error {
@@ -240,15 +498,21 @@ func (r *RobotArm) Close() error {
 
 // Usage
 func robotArmExample() {
-    arm, err := NewRobotArm("/dev/ttyUSB0", []int{1, 2, 3, 4, 5})
+    arm, err := NewRobotArm("/dev/ttyUSB0", "robot_cal.json")
     if err != nil {
         log.Fatal(err)
     }
     defer arm.Close()
 
-    // Move to target configuration
-    targetPositions := []int{2048, 1800, 2300, 2048, 2048}
-    if err := arm.MoveToPositions(targetPositions); err != nil {
+    // Move to specific joint configuration (in degrees)
+    targetAngles := map[int]float64{
+        1: 45.0,  // shoulder_pan to 45°
+        2: -30.0, // shoulder_lift to -30°
+        3: 90.0,  // elbow_flex to 90°
+        6: 75.0,  // gripper to 75% (if using percentage mode)
+    }
+    
+    if err := arm.MoveToAngles(targetAngles); err != nil {
         log.Fatal(err)
     }
 }
@@ -265,9 +529,15 @@ func advancedExample() {
     })
     defer bus.Close()
 
+    // Create servo and detect model
     servo := bus.Servo(1)
+    modelNum, err := servo.PingAndDetect()
+    if err != nil {
+        log.Fatal(err)
+    }
+    log.Printf("Detected servo model: %s", servo.Model)
     
-    // Read servo status using named registers
+    // Read servo status using named registers (model-specific)
     voltage, err := servo.ReadRegisterByName("present_voltage")
     if err != nil {
         log.Fatal(err)
@@ -280,12 +550,84 @@ func advancedExample() {
     }
     log.Printf("Temperature: %d°C", temperature[0])
     
-    // Set position limits
+    // Model-specific register access
+    switch servo.Model {
+    case "sts3215", "sts3250":
+        // STS series has goal_time register
+        goalTime := []byte{0x00, 0x32} // 50ms in little-endian
+        servo.WriteRegisterByName("goal_time", goalTime)
+        
+    case "scs0009":
+        // SCS series has running_time register instead
+        runningTime := []byte{0x00, 0x32}
+        servo.WriteRegisterByName("running_time", runningTime)
+    }
+    
+    // Set position limits (available on all models)
     minLimit := []byte{0x00, 0x02} // 512 in little-endian
     maxLimit := []byte{0x00, 0x0E} // 3584 in little-endian
     
     servo.WriteRegisterByName("min_position_limit", minLimit)
     servo.WriteRegisterByName("max_position_limit", maxLimit)
+    
+    // Get model capabilities
+    info, err := servo.GetModelInfo()
+    if err != nil {
+        log.Fatal(err)
+    }
+    log.Printf("Model resolution: %d", info["resolution"])
+    log.Printf("Max position: %d", info["max_position"])
+}
+```
+
+### Calibration Management
+
+```go
+func calibrationExample() {
+    // Create calibrations programmatically
+    calibrations := map[int]*feetech.MotorCalibration{
+        1: {
+            ID:           1,
+            DriveMode:    0,
+            HomingOffset: -1470,
+            RangeMin:     758,
+            RangeMax:     3292,
+            NormMode:     feetech.NormModeDegrees,
+        },
+        6: {
+            ID:           6,
+            DriveMode:    0,
+            HomingOffset: 1407,
+            RangeMin:     2031,
+            RangeMax:     3476,
+            NormMode:     feetech.NormModeRange100, // 0-100% for gripper
+        },
+    }
+    
+    // Define motor names for JSON export
+    motorNames := map[int]string{
+        1: "shoulder_pan",
+        6: "gripper",
+    }
+    
+    // Save to file
+    err := feetech.SaveCalibrations("my_robot.json", calibrations, motorNames)
+    if err != nil {
+        log.Fatal(err)
+    }
+    
+    // Load from file
+    loadedCals, err := feetech.LoadCalibrations("my_robot.json")
+    if err != nil {
+        log.Fatal(err)
+    }
+    
+    // Use with bus
+    bus, _ := feetech.NewBus(feetech.BusConfig{
+        Port:         "/dev/ttyUSB0",
+        Calibrations: loadedCals,
+    })
+    defer bus.Close()
 }
 ```
 
@@ -298,7 +640,7 @@ func handleErrors() {
     bus, _ := feetech.NewBus(feetech.BusConfig{Port: "/dev/ttyUSB0"})
     servo := bus.Servo(1)
     
-    _, err := servo.ReadPosition()
+    _, err := servo.ReadPosition(true)
     if err != nil {
         // Check for specific error types
         switch e := err.(type) {
@@ -343,11 +685,11 @@ func concurrentExample() {
     
     // Safe to call from multiple goroutines
     go func() {
-        servo1.WritePosition(2048)
+        servo1.WritePosition(90.0, true)
     }()
     
     go func() {
-        servo2.WritePosition(1024)
+        servo2.WritePosition(-45.0, true)
     }()
 }
 ```
@@ -390,6 +732,7 @@ go test -cover ./...
 - Update documentation for API changes
 - Ensure thread safety for concurrent operations
 - Use structured error types for error conditions
+- Include calibration data when testing with physical hardware
 
 ## License
 
