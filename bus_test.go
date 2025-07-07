@@ -1,5 +1,5 @@
 // Unit tests
-package main
+package feetech
 
 import (
 	"testing"

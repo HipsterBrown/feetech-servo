@@ -1,5 +1,5 @@
 // models.go - Servo model definitions and specifications
-package main
+package feetech
 
 import "fmt"
 

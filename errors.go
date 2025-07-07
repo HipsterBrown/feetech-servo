@@ -1,5 +1,5 @@
 // errors.go - Custom error types for the feetech package
-package main
+package feetech
 
 import "fmt"
 

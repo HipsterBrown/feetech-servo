@@ -1,5 +1,5 @@
 // calibration.go - Motor calibration definitions and functionality
-package main
+package feetech
 
 import (
 	"encoding/json"

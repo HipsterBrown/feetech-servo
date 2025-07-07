@@ -1,5 +1,5 @@
 // calibration_test.go - Unit tests for motor calibration
-package main
+package feetech
 
 import (
 	"fmt"

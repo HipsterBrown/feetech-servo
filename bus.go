@@ -1,5 +1,5 @@
 // Communication with Feetech servo motors
-package main
+package feetech
 
 import (
 	"errors"
