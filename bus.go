@@ -76,7 +76,8 @@ type Bus struct {
 	port         serial.Port
 	protocol     int
 	timeout      time.Duration
-	mu           sync.Mutex
+	commMu       sync.Mutex
+	calibMu      sync.RWMutex
 	calibrations map[int]*MotorCalibration
 
 	// Command timing
@@ -144,15 +145,15 @@ func NewBus(config BusConfig) (*Bus, error) {
 
 // SetCalibration sets calibration data for a servo
 func (b *Bus) SetCalibration(servoID int, calibration *MotorCalibration) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	b.calibMu.Lock()
+	defer b.calibMu.Unlock()
 	b.calibrations[servoID] = calibration
 }
 
 // GetCalibration gets calibration data for a servo
 func (b *Bus) GetCalibration(servoID int) (*MotorCalibration, bool) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	b.calibMu.RLock()
+	defer b.calibMu.RUnlock()
 	cal, exists := b.calibrations[servoID]
 	return cal, exists
 }
@@ -183,8 +184,8 @@ func (b *Bus) denormalize(servoID int, normalizedValue float64) (int, error) {
 
 // Close closes the bus connection
 func (b *Bus) Close() error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	b.commMu.Lock()
+	defer b.commMu.Unlock()
 
 	if b.port != nil {
 		return b.port.Close()
@@ -237,10 +238,9 @@ func (s *Servo) DetectModel() error {
 	return nil
 }
 
-// Ping sends a ping to the servo and returns the model number
-func (s *Servo) Ping() (int, error) {
-	s.bus.mu.Lock()
-	defer s.bus.mu.Unlock()
+func (s *Servo) sendPing() error {
+	s.bus.commMu.Lock()
+	defer s.bus.commMu.Unlock()
 
 	s.bus.enforceCommandGap()
 
@@ -255,16 +255,25 @@ func (s *Servo) Ping() (int, error) {
 	packet = append(packet, checksum)
 
 	if err := s.bus.writePacket(packet); err != nil {
-		return 0, err
+		return err
 	}
 
 	response, err := s.bus.readResponse(6)
 	if err != nil {
-		return 0, err
+		return err
 	}
 
 	if len(response) < 6 || response[PktIDOffset] != byte(s.ID) {
-		return 0, fmt.Errorf("invalid ping response from servo %d", s.ID)
+		return fmt.Errorf("invalid ping response from servo %d", s.ID)
+	}
+
+	return nil
+}
+
+// Ping sends a ping to the servo and returns the model number
+func (s *Servo) Ping() (int, error) {
+	if err := s.sendPing(); err != nil {
+		return 0, err
 	}
 
 	// Read model number
@@ -412,6 +421,31 @@ func (s *Servo) GetOperatingMode() (byte, error) {
 	return data[0], nil
 }
 
+// ReadHomingOffset reads the current homing offset from the servo
+func (s *Servo) ReadHomingOffset() (int, error) {
+	data, err := s.ReadRegisterByName("homing_offset")
+	if err != nil {
+		return 0, err
+	}
+
+	// Convert from little-endian bytes
+	raw := int(data[0]) | (int(data[1]) << 8)
+
+	// Get the servo model to check for sign-magnitude encoding
+	model, exists := GetModel(s.Model)
+	if !exists {
+		return 0, fmt.Errorf("unknown servo model: %s", s.Model)
+	}
+
+	// Check if homing_offset uses sign-magnitude encoding
+	if signBit, hasEncoding := model.GetSignBit("homing_offset"); hasEncoding {
+		// Apply sign-magnitude decoding
+		raw = decodeSignMagnitude(raw, signBit)
+	}
+
+	return raw, nil
+}
+
 // ReadRegisterByName reads a register using its name from the servo model
 func (s *Servo) ReadRegisterByName(name string) ([]byte, error) {
 	model, ok := GetModel(s.Model)
@@ -457,8 +491,8 @@ func (b *Bus) SyncWritePositions(servos []*Servo, positions []float64, normalize
 		return errors.New("servo and position arrays must have same length")
 	}
 
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	b.commMu.Lock()
+	defer b.commMu.Unlock()
 
 	b.enforceCommandGap()
 
@@ -529,8 +563,8 @@ func (b *Bus) syncReadPositionsFallback(servos []*Servo, normalize bool) (map[in
 
 // syncReadPositionsProtocol0 implements true sync read for Protocol 0
 func (b *Bus) syncReadPositionsProtocol0(servos []*Servo, normalize bool) (map[int]float64, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	b.commMu.Lock()
+	defer b.commMu.Unlock()
 
 	b.enforceCommandGap()
 
@@ -604,8 +638,8 @@ func (b *Bus) SyncRead(address byte, dataLength int, servoIDs []int) (map[int][]
 		return nil, fmt.Errorf("sync read not supported in Protocol 1")
 	}
 
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	b.commMu.Lock()
+	defer b.commMu.Unlock()
 
 	b.enforceCommandGap()
 
@@ -661,8 +695,8 @@ func (b *Bus) SyncRead(address byte, dataLength int, servoIDs []int) (map[int][]
 
 // readRegister reads data from a servo register
 func (s *Servo) readRegister(address byte, length int) ([]byte, error) {
-	s.bus.mu.Lock()
-	defer s.bus.mu.Unlock()
+	s.bus.commMu.Lock()
+	defer s.bus.commMu.Unlock()
 
 	s.bus.enforceCommandGap()
 
@@ -707,8 +741,8 @@ func (s *Servo) readRegister(address byte, length int) ([]byte, error) {
 
 // writeRegister writes data to a servo register
 func (s *Servo) writeRegister(address byte, data []byte) error {
-	s.bus.mu.Lock()
-	defer s.bus.mu.Unlock()
+	s.bus.commMu.Lock()
+	defer s.bus.commMu.Unlock()
 
 	s.bus.enforceCommandGap()
 

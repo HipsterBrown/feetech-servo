@@ -324,8 +324,21 @@ func (c *MotorCalibration) Denormalize(normalizedValue float64) (int, error) {
 // ApplyHomingOffset applies the homing offset to the servo
 // This should be called during servo initialization
 func (c *MotorCalibration) ApplyHomingOffset(servo *Servo) error {
-	// Convert homing offset to bytes (little-endian for STS3215)
 	offset := c.HomingOffset
+
+	// Get the servo model to check for sign-magnitude encoding
+	model, exists := GetModel(servo.Model)
+	if !exists {
+		return fmt.Errorf("unknown servo model: %s", servo.Model)
+	}
+
+	// Check if homing_offset uses sign-magnitude encoding
+	if signBit, hasEncoding := model.GetSignBit("homing_offset"); hasEncoding {
+		// Apply sign-magnitude encoding
+		offset = encodeSignMagnitude(offset, signBit)
+	}
+
+	// Convert to little-endian bytes
 	data := []byte{
 		byte(offset & 0xFF),
 		byte((offset >> 8) & 0xFF),
@@ -337,4 +350,30 @@ func (c *MotorCalibration) ApplyHomingOffset(servo *Servo) error {
 // GetHomingOffset returns the homing offset value
 func (c *MotorCalibration) GetHomingOffset() int {
 	return c.HomingOffset
+}
+
+// encodeSignMagnitude encodes a signed integer using sign-magnitude representation
+// signBit specifies which bit position to use as the sign bit
+func encodeSignMagnitude(value int, signBit int) int {
+	if value >= 0 {
+		return value
+	}
+
+	// For negative values, set the sign bit and use the absolute value
+	magnitude := -value
+	return magnitude | (1 << signBit)
+}
+
+// decodeSignMagnitude decodes a sign-magnitude encoded integer
+func decodeSignMagnitude(encoded int, signBit int) int {
+	signMask := 1 << signBit
+
+	if (encoded & signMask) != 0 {
+		// Negative number - extract magnitude and make it negative
+		magnitude := encoded & ^signMask
+		return -magnitude
+	}
+
+	// Positive number
+	return encoded
 }
