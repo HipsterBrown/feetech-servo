@@ -561,7 +561,164 @@ func (b *Bus) syncReadPositionsFallback(servos []*Servo, normalize bool) (map[in
 	return result, nil
 }
 
-// syncReadPositionsProtocol0 implements true sync read for Protocol 0
+// Improved sync read implementation that matches the Python SDK behavior
+// Add these functions to bus.go
+
+// readRawBytes reads a specific number of bytes from the port with timeout
+func (b *Bus) readRawBytes(expectedBytes int) ([]byte, error) {
+	buffer := make([]byte, expectedBytes*2) // Allocate extra space for safety
+	totalRead := 0
+	startTime := time.Now()
+
+	for totalRead < expectedBytes {
+		if time.Since(startTime) > b.timeout {
+			break // Exit on timeout, return what we have
+		}
+
+		n, err := b.port.Read(buffer[totalRead:])
+		if err != nil {
+			return nil, fmt.Errorf("failed to read raw bytes: %w", err)
+		}
+
+		if n == 0 {
+			// No data available, wait a bit and continue
+			if time.Since(startTime) > 100*time.Millisecond {
+				break // Give up if no data for 100ms
+			}
+			time.Sleep(2 * time.Millisecond)
+			continue
+		}
+
+		totalRead += n
+	}
+
+	if totalRead == 0 {
+		return nil, errors.New("no response data received")
+	}
+
+	response := make([]byte, totalRead)
+	copy(response, buffer[:totalRead])
+	return response, nil
+}
+
+// parseMultipleResponses parses individual servo responses from a continuous buffer
+// This replicates the Python SDK's readRx logic with sliding window header detection
+func (b *Bus) parseMultipleResponses(data []byte, expectedServos []*Servo, normalize bool, dataLen int) (map[int]float64, error) {
+	result := make(map[int]float64)
+	expectedServoIDs := make(map[int]bool)
+
+	// Create set of expected servo IDs for validation
+	for _, servo := range expectedServos {
+		expectedServoIDs[servo.ID] = true
+	}
+
+	rxIndex := 0
+	rxLength := len(data)
+
+	// Parse responses using sliding window approach (like Python SDK)
+	for len(result) < len(expectedServos) && rxIndex < rxLength {
+		// Search for packet header pattern: 0xFF, 0xFF, servo_id
+		if rxIndex+6+dataLen > rxLength {
+			break // Not enough data for a complete packet
+		}
+
+		// Look for packet header
+		headerFound := false
+		var servoID int
+
+		for i := rxIndex; i <= rxLength-3; i++ {
+			if data[i] == PktHeader1 && data[i+1] == PktHeader2 {
+				servoID = int(data[i+2])
+
+				// Verify this is an expected servo ID
+				if expectedServoIDs[servoID] {
+					rxIndex = i
+					headerFound = true
+					break
+				}
+			}
+		}
+
+		if !headerFound {
+			break // No more valid headers found
+		}
+
+		// Verify we have enough data for this packet
+		if rxIndex+6+dataLen > rxLength {
+			break
+		}
+
+		// Validate packet length field
+		packetLength := int(data[rxIndex+3])
+		expectedLength := dataLen + 2 // data + error byte + checksum
+		if packetLength != expectedLength {
+			rxIndex++
+			continue // Skip this position and keep searching
+		}
+
+		// Extract packet components
+		errorByte := data[rxIndex+4]
+
+		// Calculate and verify checksum
+		packetEnd := rxIndex + 6 + dataLen
+		if packetEnd > rxLength {
+			break
+		}
+
+		// Build packet for checksum verification
+		packet := make([]byte, packetEnd-rxIndex)
+		copy(packet, data[rxIndex:packetEnd])
+
+		if !b.verifyChecksum(packet) {
+			rxIndex++
+			continue // Skip packet with bad checksum
+		}
+
+		// Check for servo error
+		if errorByte != 0 {
+			return nil, fmt.Errorf("servo %d reported error: 0x%02X", servoID, errorByte)
+		}
+
+		// Extract position data (2 bytes starting at index 5)
+		if rxIndex+5+dataLen > rxLength {
+			break
+		}
+
+		rawPos := b.makeWord(data[rxIndex+5], data[rxIndex+6])
+
+		// Apply normalization if requested
+		var normalizedPos float64
+		var err error
+		if normalize {
+			normalizedPos, err = b.normalize(servoID, rawPos)
+			if err != nil {
+				return nil, fmt.Errorf("failed to normalize position for servo %d: %w", servoID, err)
+			}
+		} else {
+			normalizedPos = float64(rawPos)
+		}
+
+		result[servoID] = normalizedPos
+
+		// Move to next potential packet
+		rxIndex = packetEnd
+	}
+
+	// Verify we got responses from all expected servos
+	if len(result) < len(expectedServos) {
+		var missingIDs []int
+		for _, servo := range expectedServos {
+			if _, found := result[servo.ID]; !found {
+				missingIDs = append(missingIDs, servo.ID)
+			}
+		}
+		return result, fmt.Errorf("missing responses from servos: %v", missingIDs)
+	}
+
+	return result, nil
+}
+
+// syncReadPositionsProtocol0 implements true sync read for Protocol 0 (CORRECTED VERSION)
 func (b *Bus) syncReadPositionsProtocol0(servos []*Servo, normalize bool) (map[int]float64, error) {
 	b.commMu.Lock()
 	defer b.commMu.Unlock()
@@ -593,46 +750,106 @@ func (b *Bus) syncReadPositionsProtocol0(servos []*Servo, normalize bool) (map[i
 		return nil, err
 	}
 
-	// Read responses
-	result := make(map[int]float64)
-	expectedResponseLen := 6 + dataLen // Header + ID + Length + Error + Data + Checksum
+	// Read ALL response data at once (like Python SDK)
+	totalExpectedBytes := len(servos) * (6 + dataLen) // Each response: header(2) + id(1) + len(1) + error(1) + data(2) + checksum(1)
+	allResponseData, err := b.readRawBytes(totalExpectedBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read sync responses: %w", err)
+	}
 
-	for i := range servos {
-		response, err := b.readResponse(expectedResponseLen)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read sync response %d: %w", i, err)
+	// Parse individual responses from the buffer
+	return b.parseMultipleResponses(allResponseData, servos, normalize, dataLen)
+}
+
+// parseMultipleGenericResponses parses responses for the generic SyncRead function
+func (b *Bus) parseMultipleGenericResponses(data []byte, expectedIDs []int, dataLength int) (map[int][]byte, error) {
+	result := make(map[int][]byte)
+	expectedIDSet := make(map[int]bool)
+
+	// Create set of expected IDs
+	for _, id := range expectedIDs {
+		expectedIDSet[id] = true
+	}
+
+	rxIndex := 0
+	rxLength := len(data)
+
+	// Parse responses using sliding window approach
+	for len(result) < len(expectedIDs) && rxIndex < rxLength {
+		// Search for packet header pattern: 0xFF, 0xFF, servo_id
+		if rxIndex+6+dataLength > rxLength {
+			break
 		}
 
-		if len(response) < expectedResponseLen {
-			return nil, fmt.Errorf("sync response %d too short: got %d, expected %d", i, len(response), expectedResponseLen)
-		}
+		// Look for packet header
+		headerFound := false
+		var servoID int
 
-		servoID := int(response[PktIDOffset])
-		if !b.verifyChecksum(response) {
-			return nil, fmt.Errorf("checksum verification failed for servo %d", servoID)
-		}
+		for i := rxIndex; i <= rxLength-3; i++ {
+			if data[i] == PktHeader1 && data[i+1] == PktHeader2 {
+				servoID = int(data[i+2])
 
-		// Extract position data
-		rawPos := b.makeWord(response[PktParam0], response[PktParam0+1])
-
-		var normalizedPos float64
-		var err2 error
-		if normalize {
-			normalizedPos, err2 = b.normalize(servoID, rawPos)
-			if err2 != nil {
-				return nil, fmt.Errorf("failed to normalize position for servo %d: %w", servoID, err2)
+				// Verify this is an expected servo ID
+				if expectedIDSet[servoID] {
+					rxIndex = i
+					headerFound = true
+					break
+				}
 			}
-		} else {
-			normalizedPos = float64(rawPos)
 		}
 
-		result[servoID] = normalizedPos
+		if !headerFound {
+			break
+		}
+
+		// Verify we have enough data for this packet
+		if rxIndex+6+dataLength > rxLength {
+			break
+		}
+
+		// Validate packet length field
+		packetLength := int(data[rxIndex+3])
+		expectedLength := dataLength + 2
+		if packetLength != expectedLength {
+			rxIndex++
+			continue
+		}
+
+		// Extract packet components
+		errorByte := data[rxIndex+4]
+
+		// Verify checksum
+		packetEnd := rxIndex + 6 + dataLength
+		if packetEnd > rxLength {
+			break
+		}
+
+		packet := make([]byte, packetEnd-rxIndex)
+		copy(packet, data[rxIndex:packetEnd])
+
+		if !b.verifyChecksum(packet) {
+			rxIndex++
+			continue
+		}
+
+		// Check for servo error
+		if errorByte != 0 {
+			return nil, fmt.Errorf("servo %d reported error: 0x%02X", servoID, errorByte)
+		}
+
+		// Extract data
+		responseData := make([]byte, dataLength)
+		copy(responseData, data[rxIndex+5:rxIndex+5+dataLength])
+		result[servoID] = responseData
+
+		// Move to next potential packet
+		rxIndex = packetEnd
 	}
 
 	return result, nil
 }
 
-// SyncRead performs a generic sync read operation
+// SyncRead performs a generic sync read operation (CORRECTED VERSION)
 func (b *Bus) SyncRead(address byte, dataLength int, servoIDs []int) (map[int][]byte, error) {
 	if b.protocol == ProtocolV1 {
 		return nil, fmt.Errorf("sync read not supported in Protocol 1")
@@ -665,32 +882,15 @@ func (b *Bus) SyncRead(address byte, dataLength int, servoIDs []int) (map[int][]
 		return nil, err
 	}
 
-	// Read responses
-	result := make(map[int][]byte)
-	expectedResponseLen := 6 + dataLength
-
-	for i := range servoIDs {
-		response, err := b.readResponse(expectedResponseLen)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read sync response %d: %w", i, err)
-		}
-
-		if len(response) < expectedResponseLen {
-			return nil, fmt.Errorf("sync response %d too short", i)
-		}
-
-		servoID := int(response[PktIDOffset])
-		if !b.verifyChecksum(response) {
-			return nil, fmt.Errorf("checksum verification failed for servo %d", servoID)
-		}
-
-		// Extract data
-		data := make([]byte, dataLength)
-		copy(data, response[PktParam0:PktParam0+dataLength])
-		result[servoID] = data
+	// Read ALL response data at once (like Python SDK)
+	totalExpectedBytes := len(servoIDs) * (6 + dataLength)
+	allResponseData, err := b.readRawBytes(totalExpectedBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read sync responses: %w", err)
 	}
 
-	return result, nil
+	// Parse individual responses from the buffer
+	return b.parseMultipleGenericResponses(allResponseData, servoIDs, dataLength)
 }
 
 // readRegister reads data from a servo register

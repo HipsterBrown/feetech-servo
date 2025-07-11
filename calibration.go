@@ -353,27 +353,38 @@ func (c *MotorCalibration) GetHomingOffset() int {
 }
 
 // encodeSignMagnitude encodes a signed integer using sign-magnitude representation
-// signBit specifies which bit position to use as the sign bit
 func encodeSignMagnitude(value int, signBit int) int {
-	if value >= 0 {
-		return value
+	maxMagnitude := (1 << signBit) - 1
+	magnitude := abs(value)
+
+	if magnitude > maxMagnitude {
+		panic(fmt.Sprintf("Magnitude %d exceeds %d (max for signBit=%d)",
+			magnitude, maxMagnitude, signBit))
 	}
 
-	// For negative values, set the sign bit and use the absolute value
-	magnitude := -value
-	return magnitude | (1 << signBit)
+	directionBit := 0
+	if value < 0 {
+		directionBit = 1
+	}
+
+	return (directionBit << signBit) | magnitude
 }
 
 // decodeSignMagnitude decodes a sign-magnitude encoded integer
 func decodeSignMagnitude(encoded int, signBit int) int {
-	signMask := 1 << signBit
+	directionBit := (encoded >> signBit) & 1
+	magnitudeMask := (1 << signBit) - 1
+	magnitude := encoded & magnitudeMask
 
-	if (encoded & signMask) != 0 {
-		// Negative number - extract magnitude and make it negative
-		magnitude := encoded & ^signMask
+	if directionBit != 0 {
 		return -magnitude
 	}
+	return magnitude
+}
 
-	// Positive number
-	return encoded
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
