@@ -93,10 +93,10 @@ func TestNormalization(t *testing.T) {
 		expected float64
 	}{
 		{"center position", 2000, 0.0},
-		{"max position", 3000, 180.0},
-		{"min position", 1000, -180.0},
-		{"quarter position", 1500, -90.0},
-		{"three quarter position", 2500, 90.0},
+		{"max position", 3000, 87.91},
+		{"min position", 1000, -87.91},
+		{"quarter position", 1500, -43.96},
+		{"three quarter position", 2500, 43.96},
 	}
 
 	for _, tt := range tests {
@@ -128,8 +128,8 @@ func TestDenormalization(t *testing.T) {
 		{"center position", 0.0, 2000},
 		{"max position", 180.0, 3000},
 		{"min position", -180.0, 1000},
-		{"quarter position", -90.0, 1500},
-		{"three quarter position", 90.0, 2500},
+		{"quarter position", -90.0, 1000},
+		{"three quarter position", 90.0, 3000},
 	}
 
 	for _, tt := range tests {
@@ -194,11 +194,11 @@ func TestDriveModeInversion(t *testing.T) {
 		rawValue int
 		expected float64
 	}{
-		{"center position", 2000, 0.0},   // Center should still be 0°
-		{"min position", 1000, 180.0},    // Min raw -> Max normalized
-		{"max position", 3000, -180.0},   // Max raw -> Min normalized
-		{"quarter position", 1500, 90.0}, // Quarter -> 3/4 normalized
-		{"three quarter", 2500, -90.0},   // 3/4 -> Quarter normalized
+		{"center position", 2000, 0.0},    // Center should still be 0°
+		{"min position", 1000, 87.91},     // Min raw -> Max normalized
+		{"max position", 3000, -87.91},    // Max raw -> Min normalized
+		{"quarter position", 1500, 43.96}, // Quarter -> 3/4 normalized
+		{"three quarter", 2500, -43.96},   // 3/4 -> Quarter normalized
 	}
 
 	for _, tt := range tests {
@@ -241,8 +241,8 @@ func TestDriveModeInversionAllModes(t *testing.T) {
 		{"RangeM100 max", NormModeRangeM100, 3000, -100.0}, // Max -> -100 (inverted)
 
 		{"Degrees center", NormModeDegrees, 2000, 0.0}, // Center -> 0°
-		{"Degrees min", NormModeDegrees, 1000, 180.0},  // Min -> +180° (inverted)
-		{"Degrees max", NormModeDegrees, 3000, -180.0}, // Max -> -180° (inverted)
+		{"Degrees min", NormModeDegrees, 1000, 87.91},  // Min -> +180° (inverted)
+		{"Degrees max", NormModeDegrees, 3000, -87.91}, // Max -> -180° (inverted)
 	}
 
 	for _, tc := range testCases {
