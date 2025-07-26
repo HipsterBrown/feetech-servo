@@ -216,11 +216,10 @@ func (c *MotorCalibration) Normalize(rawValue int) (float64, error) {
 		normalized = math.Max(-100, math.Min(100, normalized))
 
 	case NormModeDegrees:
-		// Map to -180° to +180° range
+		// Map to 360 degrees based on servo resolution
 		center := float64(c.RangeMin+c.RangeMax) / 2.0
-		halfRange := float64(c.RangeMax-c.RangeMin) / 2.0
-		normalized = (float64(rawValue) - center) / halfRange * 180.0
-		normalized = math.Max(-180, math.Min(180, normalized))
+		maxResolution := float64(4095)
+		normalized = (float64(rawValue) - center) * 360 / maxResolution
 
 	default:
 		return 0, fmt.Errorf("unknown normalization mode: %d", c.NormMode)
@@ -299,12 +298,10 @@ func (c *MotorCalibration) Denormalize(normalizedValue float64) (int, error) {
 		rawValue = int(math.Round(center + clamped/100.0*halfRange))
 
 	case NormModeDegrees:
-		// Map from -180° to +180° range
-		// Clamp to valid range
-		clamped := math.Max(-180, math.Min(180, adjustedValue))
+		// Map from 360 degrees range based on max resolution
 		center := float64(c.RangeMin+c.RangeMax) / 2.0
-		halfRange := float64(c.RangeMax-c.RangeMin) / 2.0
-		rawValue = int(math.Round(center + clamped/180.0*halfRange))
+		maxResolution := float64(4095)
+		rawValue = int((adjustedValue * maxResolution / 360) + center)
 
 	default:
 		return 0, fmt.Errorf("unknown normalization mode: %d", c.NormMode)
