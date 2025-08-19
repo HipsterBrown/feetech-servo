@@ -202,6 +202,11 @@ func (b *Bus) SyncWritePositions(servos []*Servo, positions []float64, normalize
 // Synchronously read positions from multiple servos
 func (b *Bus) SyncReadPositions(servos []*Servo, normalize bool) (map[int]float64, error)
 
+// Servo discovery and setup
+func (b *Bus) DiscoverServos() ([]DiscoveredServo, error)
+func (b *Bus) ScanServoIDs(startID, endID int) ([]DiscoveredServo, error)
+func (b *Bus) DiscoverServoAtBaudrates(baudrates []int, expectedModel string) (*DiscoveredServo, int, error)
+
 // Calibration management
 func (b *Bus) SetCalibration(servoID int, calibration *MotorCalibration)
 func (b *Bus) GetCalibration(servoID int) (*MotorCalibration, bool)
@@ -240,6 +245,10 @@ func (s *Servo) GetOperatingMode() (byte, error)
 func (s *Servo) DetectModel() error
 func (s *Servo) GetModelInfo() (map[string]interface{}, error)
 
+// Setup operations (writes to EEPROM)
+func (s *Servo) SetServoID(newID int) error
+func (s *Servo) SetBaudrate(baudrate int) error
+
 // Model-based register access
 func (s *Servo) ReadRegisterByName(name string) ([]byte, error)
 func (s *Servo) WriteRegisterByName(name string, data []byte) error
@@ -254,6 +263,12 @@ type BusConfig struct {
     Protocol     int                           // Protocol version: ProtocolV0 or ProtocolV1
     Timeout      time.Duration                 // Communication timeout (default: 1 second)
     Calibrations map[int]*MotorCalibration     // Optional motor calibrations
+}
+
+type DiscoveredServo struct {
+    ID          int    // Servo ID found on bus
+    ModelNumber int    // Hardware model number
+    ModelName   string // Model name (e.g., "sts3215")
 }
 ```
 
@@ -577,6 +592,209 @@ func advancedExample() {
     }
     log.Printf("Model resolution: %d", info["resolution"])
     log.Printf("Max position: %d", info["max_position"])
+}
+```
+
+### Servo Discovery and Setup
+
+The package provides comprehensive servo discovery and setup functionality for initial motor configuration:
+
+```go
+func servoDiscoveryExample() {
+    bus, err := feetech.NewBus(feetech.BusConfig{
+        Port:     "/dev/ttyUSB0",
+        Baudrate: 1000000,
+        Protocol: feetech.ProtocolV0,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer bus.Close()
+
+    // Method 1: Broadcast discovery (Protocol 0 only)
+    // Discovers all servos on the bus at current baudrate
+    discovered, err := bus.DiscoverServos()
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Found %d servos:\n", len(discovered))
+    for _, servo := range discovered {
+        fmt.Printf("  ID: %d, Model: %s (number: %d)\n", 
+            servo.ID, servo.ModelName, servo.ModelNumber)
+    }
+
+    // Method 2: Sequential ID scanning
+    // Useful for Protocol 1 or when broadcast fails
+    scanned, err := bus.ScanServoIDs(0, 10) // Scan IDs 0-10
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Method 3: Multi-baudrate discovery
+    // Scan multiple baudrates to find servos with unknown settings
+    baudrates := []int{1000000, 500000, 250000, 115200, 57600, 38400, 19200, 9600}
+    servo, baudrate, err := bus.DiscoverServoAtBaudrates(baudrates, "sts3215")
+    if err != nil {
+        log.Printf("No STS3215 servo found: %v", err)
+    } else {
+        fmt.Printf("Found STS3215 at ID %d, baudrate %d\n", servo.ID, baudrate)
+    }
+}
+```
+
+### Servo ID and Baudrate Configuration
+
+```go
+func servoSetupExample() {
+    bus, err := feetech.NewBus(feetech.BusConfig{
+        Port:     "/dev/ttyUSB0",
+        Baudrate: 57600, // Connect at current servo baudrate
+        Protocol: feetech.ProtocolV0,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer bus.Close()
+
+    // Step 1: Discover servo at current settings
+    discovered, err := bus.DiscoverServos()
+    if err != nil || len(discovered) != 1 {
+        log.Fatal("Expected exactly one servo, found:", len(discovered))
+    }
+
+    servo := bus.Servo(discovered[0].ID)
+    servo.Model = discovered[0].ModelName
+
+    fmt.Printf("Found servo: ID %d, Model %s\n", servo.ID, servo.Model)
+
+    // Step 2: Change servo ID (writes to EEPROM)
+    newID := 5
+    if err := servo.SetServoID(newID); err != nil {
+        log.Fatal("Failed to set servo ID:", err)
+    }
+    fmt.Printf("✓ Servo ID changed to %d\n", newID)
+
+    // Step 3: Change baudrate to standard rate (writes to EEPROM)
+    if err := servo.SetBaudrate(1000000); err != nil {
+        log.Fatal("Failed to set baudrate:", err)
+    }
+    fmt.Printf("✓ Servo baudrate set to 1000000\n")
+
+    // Step 4: Reconnect at new baudrate to verify
+    bus.Close()
+    
+    newBus, err := feetech.NewBus(feetech.BusConfig{
+        Port:     "/dev/ttyUSB0",
+        Baudrate: 1000000,
+        Protocol: feetech.ProtocolV0,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer newBus.Close()
+
+    // Verify the servo responds at new settings
+    newServo := newBus.Servo(newID)
+    modelNum, err := newServo.Ping()
+    if err != nil {
+        log.Fatal("Servo not responding at new settings:", err)
+    }
+    
+    fmt.Printf("✓ Servo setup complete - ID: %d, Model: %d\n", newID, modelNum)
+}
+```
+
+### Systematic Motor Setup Process
+
+For robotics applications requiring multiple servos with specific IDs:
+
+```go
+func systematicSetupExample() {
+    // Define target motor configuration
+    type MotorConfig struct {
+        Name     string
+        TargetID int
+        Model    string
+    }
+
+    motors := []MotorConfig{
+        {"gripper", 6, "sts3215"},
+        {"wrist_roll", 5, "sts3215"},
+        {"wrist_flex", 4, "sts3215"},
+        {"elbow_flex", 3, "sts3215"},
+        {"shoulder_lift", 2, "sts3215"},
+        {"shoulder_pan", 1, "sts3215"},
+    }
+
+    // Process each motor individually
+    for _, motor := range motors {
+        fmt.Printf("\n=== Setting up %s (ID: %d) ===\n", motor.Name, motor.TargetID)
+        fmt.Printf("Connect only the '%s' motor and press Enter...\n", motor.Name)
+        
+        // Wait for user to connect the specific motor
+        fmt.Scanln()
+
+        // Discover servo at various baudrates
+        baudrates := []int{1000000, 500000, 250000, 115200, 57600, 38400, 19200, 9600}
+        
+        bus, err := feetech.NewBus(feetech.BusConfig{
+            Port:     "/dev/ttyUSB0",
+            Protocol: feetech.ProtocolV0,
+        })
+        if err != nil {
+            log.Printf("Failed to create bus: %v", err)
+            continue
+        }
+
+        servo, foundBaudrate, err := bus.DiscoverServoAtBaudrates(baudrates, motor.Model)
+        if err != nil {
+            log.Printf("❌ Motor %s not found: %v", motor.Name, err)
+            bus.Close()
+            continue
+        }
+
+        fmt.Printf("Found %s at ID %d, baudrate %d\n", motor.Name, servo.ID, foundBaudrate)
+
+        // Reconnect at found baudrate
+        bus.Close()
+        bus, err = feetech.NewBus(feetech.BusConfig{
+            Port:     "/dev/ttyUSB0",
+            Baudrate: foundBaudrate,
+            Protocol: feetech.ProtocolV0,
+        })
+        if err != nil {
+            log.Printf("Failed to reconnect: %v", err)
+            continue
+        }
+
+        // Configure the servo
+        servoInstance := bus.Servo(servo.ID)
+        servoInstance.Model = servo.ModelName
+
+        // Set target ID
+        if servo.ID != motor.TargetID {
+            if err := servoInstance.SetServoID(motor.TargetID); err != nil {
+                log.Printf("❌ Failed to set ID for %s: %v", motor.Name, err)
+                bus.Close()
+                continue
+            }
+        }
+
+        // Set standard baudrate
+        if err := servoInstance.SetBaudrate(1000000); err != nil {
+            log.Printf("❌ Failed to set baudrate for %s: %v", motor.Name, err)
+        } else {
+            fmt.Printf("✅ %s configured successfully (ID: %d)\n", motor.Name, motor.TargetID)
+        }
+
+        bus.Close()
+    }
+
+    fmt.Println("\n=== Setup Complete ===")
+    fmt.Println("All motors should now be configured with standard settings:")
+    fmt.Println("- Baudrate: 1000000")
+    fmt.Println("- IDs assigned as specified")
 }
 ```
 

@@ -74,6 +74,7 @@ const (
 // Bus represents a Feetech servo bus
 type Bus struct {
 	port         serial.Port
+	portName     string
 	protocol     int
 	timeout      time.Duration
 	commMu       sync.Mutex
@@ -127,6 +128,7 @@ func NewBus(config BusConfig) (*Bus, error) {
 
 	bus := &Bus{
 		port:         port,
+		portName:     config.Port,
 		protocol:     config.Protocol,
 		timeout:      config.Timeout,
 		calibrations: make(map[int]*MotorCalibration),
@@ -939,6 +941,50 @@ func (s *Servo) readRegister(address byte, length int) ([]byte, error) {
 	return data, nil
 }
 
+// readRegisterUnlocked reads data from a servo register without acquiring the mutex
+// This is used internally when the mutex is already held
+func (s *Servo) readRegisterUnlocked(address byte, length int) ([]byte, error) {
+	s.bus.enforceCommandGap()
+
+	packet := []byte{
+		PktHeader1, PktHeader2,
+		byte(s.ID),
+		0x04,
+		InstRead,
+		address,
+		byte(length),
+	}
+
+	checksum := s.bus.calculateChecksum(packet[2:])
+	packet = append(packet, checksum)
+
+	if err := s.bus.writePacket(packet); err != nil {
+		return nil, err
+	}
+
+	expectedLen := 6 + length
+	response, err := s.bus.readResponse(expectedLen)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(response) < expectedLen {
+		return nil, fmt.Errorf("response too short: got %d, expected %d", len(response), expectedLen)
+	}
+
+	if response[PktIDOffset] != byte(s.ID) {
+		return nil, fmt.Errorf("wrong servo ID in response: got %d, expected %d", response[PktIDOffset], s.ID)
+	}
+
+	if !s.bus.verifyChecksum(response) {
+		return nil, errors.New("checksum verification failed")
+	}
+
+	data := make([]byte, length)
+	copy(data, response[PktParam0:PktParam0+length])
+	return data, nil
+}
+
 // writeRegister writes data to a servo register
 func (s *Servo) writeRegister(address byte, data []byte) error {
 	s.bus.commMu.Lock()
@@ -1093,4 +1139,226 @@ func (b *Bus) makeWord(low, high byte) int {
 		return int(low) | (int(high) << 8)
 	}
 	return int(high) | (int(low) << 8)
+}
+
+// DiscoveredServo represents a servo found during discovery
+type DiscoveredServo struct {
+	ID          int
+	ModelNumber int
+	ModelName   string
+}
+
+// DiscoverServos scans for all servos on the bus using broadcast ping (Protocol 0 only)
+func (b *Bus) DiscoverServos() ([]DiscoveredServo, error) {
+	if b.protocol != ProtocolV0 {
+		return nil, fmt.Errorf("broadcast discovery only supported in Protocol 0")
+	}
+
+	b.commMu.Lock()
+	defer b.commMu.Unlock()
+
+	b.enforceCommandGap()
+
+	// Send broadcast ping
+	packet := []byte{
+		PktHeader1, PktHeader2,
+		BroadcastID,
+		0x02,
+		InstPing,
+	}
+
+	checksum := b.calculateChecksum(packet[2:])
+	packet = append(packet, checksum)
+
+	if err := b.writePacket(packet); err != nil {
+		return nil, fmt.Errorf("failed to send broadcast ping: %w", err)
+	}
+
+	// Wait for and collect multiple responses
+	time.Sleep(2311 * time.Millisecond) // Allow time for responses
+
+	var discovered []DiscoveredServo
+	timeout := time.Now().Add(b.timeout)
+
+	for time.Now().Before(timeout) {
+		// Try to read a response
+		response, err := b.readResponse(6)
+		if err != nil {
+			// No more responses available
+			break
+		}
+
+		if len(response) >= 6 {
+			servoID := int(response[PktIDOffset])
+
+			// Create temporary servo to read model number
+			tempServo := &Servo{ID: servoID, Model: "sts3215", bus: b}
+			modelNum, err := tempServo.readModelNumberUnlocked()
+			if err != nil {
+				continue // Skip this servo if we can't read its model
+			}
+
+			// Look up model name
+			modelName := "unknown"
+			if model, ok := GetModelByNumber(modelNum); ok {
+				modelName = model.Name
+			}
+
+			discovered = append(discovered, DiscoveredServo{
+				ID:          servoID,
+				ModelNumber: modelNum,
+				ModelName:   modelName,
+			})
+		}
+	}
+
+	return discovered, nil
+}
+
+// ScanServoIDs sequentially pings servo IDs to find active servos
+func (b *Bus) ScanServoIDs(startID, endID int) ([]DiscoveredServo, error) {
+	if startID < 0 || endID > MaxID || startID > endID {
+		return nil, fmt.Errorf("invalid ID range: %d to %d", startID, endID)
+	}
+
+	var discovered []DiscoveredServo
+
+	for id := startID; id <= endID; id++ {
+		servo := &Servo{ID: id, Model: "sts3215", bus: b}
+
+		modelNum, err := servo.Ping()
+		if err != nil {
+			continue // Servo not responding at this ID
+		}
+
+		// Look up model name
+		modelName := "unknown"
+		if model, ok := GetModelByNumber(modelNum); ok {
+			modelName = model.Name
+		}
+
+		discovered = append(discovered, DiscoveredServo{
+			ID:          id,
+			ModelNumber: modelNum,
+			ModelName:   modelName,
+		})
+	}
+
+	return discovered, nil
+}
+
+// SetServoID changes a servo's ID (writes to EEPROM)
+func (s *Servo) SetServoID(newID int) error {
+	if newID < 0 || newID > MaxID {
+		return fmt.Errorf("invalid servo ID: %d (must be 0-%d)", newID, MaxID)
+	}
+
+	// Safety: disable torque before changing ID
+	if err := s.SetTorqueEnable(false); err != nil {
+		return fmt.Errorf("failed to disable torque: %w", err)
+	}
+
+	// Write new ID to EEPROM
+	if err := s.writeRegister(AddrID, []byte{byte(newID)}); err != nil {
+		return fmt.Errorf("failed to write new ID: %w", err)
+	}
+
+	// Update the servo's ID
+	s.ID = newID
+	return nil
+}
+
+// SetBaudrate changes a servo's baudrate (writes to EEPROM)
+func (s *Servo) SetBaudrate(baudrate int) error {
+	// Get model info to validate baudrate
+	model, ok := GetModel(s.Model)
+	if !ok {
+		return fmt.Errorf("unknown servo model: %s", s.Model)
+	}
+
+	// Check if baudrate is supported
+	var baudrateValue byte
+	found := false
+	for i, rate := range model.BaudRates {
+		if rate == baudrate {
+			baudrateValue = byte(i)
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return fmt.Errorf("baudrate %d not supported by model %s", baudrate, s.Model)
+	}
+
+	// Safety: disable torque before changing baudrate
+	if err := s.SetTorqueEnable(false); err != nil {
+		return fmt.Errorf("failed to disable torque: %w", err)
+	}
+
+	// Write baudrate value to EEPROM
+	if err := s.writeRegister(AddrBaudRate, []byte{baudrateValue}); err != nil {
+		return fmt.Errorf("failed to write baudrate: %w", err)
+	}
+
+	return nil
+}
+
+// DiscoverServoAtBaudrates scans multiple baudrates to find a single servo
+func (b *Bus) DiscoverServoAtBaudrates(baudrates []int, expectedModel string) (*DiscoveredServo, int, error) {
+	for _, baudrate := range baudrates {
+		// Create temporary bus with this baudrate
+		tempConfig := BusConfig{
+			Port:     b.portName,
+			Baudrate: baudrate,
+			Protocol: b.protocol,
+			Timeout:  b.timeout,
+		}
+
+		tempBus, err := NewBus(tempConfig)
+		if err != nil {
+			continue // Try next baudrate
+		}
+
+		// Try to discover servos at this baudrate
+		var discovered []DiscoveredServo
+		if b.protocol == ProtocolV0 {
+			discovered, err = tempBus.DiscoverServos()
+		} else {
+			discovered, err = tempBus.ScanServoIDs(0, MaxID)
+		}
+
+		tempBus.Close()
+
+		if err != nil || len(discovered) == 0 {
+			continue // Try next baudrate
+		}
+
+		// Check if we found exactly one servo of the expected model
+		for _, servo := range discovered {
+			if expectedModel == "" || servo.ModelName == expectedModel {
+				return &servo, baudrate, nil
+			}
+		}
+	}
+
+	return nil, 0, fmt.Errorf("no servo found at any baudrate")
+}
+
+// readModelNumber is a helper to read model number from a servo
+func (s *Servo) readModelNumber() (int, error) {
+	data, err := s.readRegister(AddrModelNumber, 2)
+	if err != nil {
+		return 0, err
+	}
+	return s.bus.makeWord(data[0], data[1]), nil
+}
+
+// readModelNumberUnlocked reads the model number without acquiring the mutex
+func (s *Servo) readModelNumberUnlocked() (int, error) {
+	data, err := s.readRegisterUnlocked(AddrModelNumber, 2)
+	if err != nil {
+		return 0, err
+	}
+	return s.bus.makeWord(data[0], data[1]), nil
 }
