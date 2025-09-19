@@ -7,8 +7,6 @@ import (
 	"maps"
 	"sync"
 	"time"
-
-	"go.bug.st/serial"
 )
 
 // Protocol constants
@@ -73,7 +71,7 @@ const (
 
 // Bus represents a Feetech servo bus
 type Bus struct {
-	port         serial.Port
+	port         serialPort
 	portName     string
 	protocol     int
 	timeout      time.Duration
@@ -114,14 +112,7 @@ func NewBus(config BusConfig) (*Bus, error) {
 		return nil, fmt.Errorf("unsupported protocol version: %d", config.Protocol)
 	}
 
-	mode := &serial.Mode{
-		BaudRate: config.Baudrate,
-		DataBits: 8,
-		Parity:   serial.NoParity,
-		StopBits: serial.OneStopBit,
-	}
-
-	port, err := serial.Open(config.Port, mode)
+	port, err := OpenPort(config.Port, config.Baudrate)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open port %s: %w", config.Port, err)
 	}
