@@ -219,6 +219,77 @@ func (b *Bus) ServoWithModel(id int, model string) (*Servo, error) {
 	}, nil
 }
 
+func (b *Bus) ConfigureServos(servos []*Servo) error {
+	return b.ConfigureServosWithAcceleration(servos, 254)
+}
+
+func (b *Bus) ConfigureServosWithAcceleration(servos []*Servo, acceleration int) error {
+	returnDelayTime := []byte{
+		byte(0x00 & 0xFF),
+		byte((0x00 >> 8) & 0xFF),
+	}
+
+	accelerationData := []byte{
+		byte(acceleration & 0xFF),
+		byte((acceleration >> 8) & 0xFF),
+	}
+
+	// disable torque
+	for _, servo := range servos {
+		err := servo.SetTorqueEnable(false)
+		if err != nil {
+			return fmt.Errorf("failed to disable torque for servo %d: %w", servo.ID, err)
+		}
+	}
+
+	// write return delay time and acceleration
+	for _, servo := range servos {
+		err := servo.WriteRegisterByName("return_delay_time", returnDelayTime)
+		if err != nil {
+			return fmt.Errorf("failed to write return delay time for servo %d: %w", servo.ID, err)
+		}
+
+		err = servo.WriteRegisterByName("acceleration", accelerationData)
+		if err != nil {
+			return fmt.Errorf("failed to write acceleration for servo %d: %w", servo.ID, err)
+		}
+	}
+
+	// set operating mode to position
+	for _, servo := range servos {
+		err := servo.SetOperatingMode(OperatingModePosition)
+		if err != nil {
+			return fmt.Errorf("failed to set operating mode to position for servo %d: %w", servo.ID, err)
+		}
+
+		// set P_Coefficient to lower value to avoid shakiness (Default is 32)
+		err = servo.WriteRegisterByName("p_coefficient", []byte{byte(16)})
+		if err != nil {
+			return fmt.Errorf("failed to set P_Coefficient for servo %d: %w", servo.ID, err)
+		}
+
+		// set I_Coefficient and D_Coefficient to default value 0 and 32
+		err = servo.WriteRegisterByName("i_coefficient", []byte{byte(0)})
+		if err != nil {
+			return fmt.Errorf("failed to set I_Coefficient for servo %d: %w", servo.ID, err)
+		}
+		err = servo.WriteRegisterByName("d_coefficient", []byte{byte(32)})
+		if err != nil {
+			return fmt.Errorf("failed to set D_Coefficient for servo %d: %w", servo.ID, err)
+		}
+	}
+
+	// enable torque
+	for _, servo := range servos {
+		err := servo.SetTorqueEnable(true)
+		if err != nil {
+			return fmt.Errorf("failed to enable torque for servo %d: %w", servo.ID, err)
+		}
+	}
+	
+	return nil
+}
+
 // DetectModel automatically detects and sets the servo model by reading the model number
 func (s *Servo) DetectModel() error {
 	// Read model number from servo
