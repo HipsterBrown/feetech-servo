@@ -220,13 +220,18 @@ func (b *Bus) ServoWithModel(id int, model string) (*Servo, error) {
 }
 
 func (b *Bus) ConfigureServos(servos []*Servo) error {
-	return b.ConfigureServosWithAcceleration(servos, 254)
+	return b.ConfigureServosWithAcceleration(servos, 254, 254)
 }
 
-func (b *Bus) ConfigureServosWithAcceleration(servos []*Servo, acceleration int) error {
+func (b *Bus) ConfigureServosWithAcceleration(servos []*Servo, maxAcceleration, acceleration int) error {
 	returnDelayTime := []byte{byte(0 & 0xFF)}
 
-	accelerationData := []byte{byte(acceleration & 0xFF)}
+	var accelerationData []byte
+	if b.protocol == ProtocolV0 {
+		accelerationData = []byte{byte(maxAcceleration & 0xFF)}
+	} else {
+		accelerationData = []byte{byte(acceleration & 0xFF)}
+	}
 
 	// disable torque
 	for _, servo := range servos {
@@ -243,7 +248,11 @@ func (b *Bus) ConfigureServosWithAcceleration(servos []*Servo, acceleration int)
 			return fmt.Errorf("failed to write return delay time for servo %d: %w", servo.ID, err)
 		}
 
-		err = servo.WriteRegisterByName("acceleration", accelerationData)
+		if b.protocol == ProtocolV0 {
+			err = servo.WriteRegisterByName("maximum_acceleration", accelerationData)
+		} else {
+			err = servo.WriteRegisterByName("acceleration", accelerationData)
+		}
 		if err != nil {
 			return fmt.Errorf("failed to write acceleration for servo %d: %w", servo.ID, err)
 		}
@@ -280,7 +289,7 @@ func (b *Bus) ConfigureServosWithAcceleration(servos []*Servo, acceleration int)
 			return fmt.Errorf("failed to enable torque for servo %d: %w", servo.ID, err)
 		}
 	}
-	
+
 	return nil
 }
 
@@ -541,7 +550,7 @@ func (s *Servo) WriteRegisterByName(name string, data []byte) error {
 	}
 
 	if len(data) != addrInfo.Size {
-		return fmt.Errorf("data size mismatch: expected %d, got %d", addrInfo.Size, len(data))
+		return fmt.Errorf("data size mismatch: expected %d, got %d. data: %+v", addrInfo.Size, len(data), data)
 	}
 
 	// Check if register is read-only
