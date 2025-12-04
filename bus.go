@@ -224,9 +224,9 @@ func (b *Bus) ConfigureServos(servos []*Servo) error {
 }
 
 func (b *Bus) ConfigureServosWithAcceleration(servos []*Servo, acceleration int) error {
-	returnDelayTime := []byte{byte(0x00)}
+	returnDelayTime := []byte{byte(0 & 0xFF)}
 
-	accelerationData := []byte{byte(acceleration)}
+	accelerationData := []byte{byte(acceleration & 0xFF)}
 
 	// disable torque
 	for _, servo := range servos {
