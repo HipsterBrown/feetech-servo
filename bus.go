@@ -226,13 +226,6 @@ func (b *Bus) ConfigureServos(servos []*Servo) error {
 func (b *Bus) ConfigureServosWithAcceleration(servos []*Servo, maxAcceleration, acceleration int) error {
 	returnDelayTime := []byte{byte(0 & 0xFF)}
 
-	var accelerationData []byte
-	if b.protocol == ProtocolV0 {
-		accelerationData = []byte{byte(maxAcceleration & 0xFF)}
-	} else {
-		accelerationData = []byte{byte(acceleration & 0xFF)}
-	}
-
 	// disable torque
 	for _, servo := range servos {
 		err := servo.SetTorqueEnable(false)
@@ -249,10 +242,12 @@ func (b *Bus) ConfigureServosWithAcceleration(servos []*Servo, maxAcceleration, 
 		}
 
 		if b.protocol == ProtocolV0 {
-			err = servo.WriteRegisterByName("maximum_acceleration", accelerationData)
-		} else {
-			err = servo.WriteRegisterByName("acceleration", accelerationData)
+			err = servo.WriteRegisterByName("maximum_acceleration", []byte{byte(maxAcceleration & 0xFF)})
+			if err != nil {
+				return fmt.Errorf("failed to write maximum acceleration for servo %d: %w", servo.ID, err)
+			}
 		}
+		err = servo.WriteRegisterByName("acceleration", []byte{byte(acceleration & 0xFF)})
 		if err != nil {
 			return fmt.Errorf("failed to write acceleration for servo %d: %w", servo.ID, err)
 		}
