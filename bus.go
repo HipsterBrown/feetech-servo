@@ -557,7 +557,7 @@ func (s *Servo) WriteRegisterByName(name string, data []byte) error {
 	}
 
 	if len(data) != addrInfo.Size {
-		return fmt.Errorf("data size mismatch: expected %d, got %d. data: %+v", addrInfo.Size, len(data), data)
+		return fmt.Errorf("data size mismatch: expected %d, got %d", addrInfo.Size, len(data))
 	}
 
 	// Check if register is read-only
