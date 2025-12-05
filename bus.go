@@ -240,14 +240,7 @@ func (b *Bus) ConfigureServosWithAcceleration(servos []*Servo, maxAcceleration, 
 		if err != nil {
 			return fmt.Errorf("failed to write return delay time for servo %d: %w", servo.ID, err)
 		}
-
-		if b.protocol == ProtocolV0 {
-			err = servo.WriteRegisterByName("maximum_acceleration", []byte{byte(maxAcceleration & 0xFF)})
-			if err != nil {
-				return fmt.Errorf("failed to write maximum acceleration for servo %d: %w", servo.ID, err)
-			}
-		}
-		err = servo.WriteRegisterByName("acceleration", []byte{byte(acceleration & 0xFF)})
+		err = servo.WriteAcceleration(acceleration)
 		if err != nil {
 			return fmt.Errorf("failed to write acceleration for servo %d: %w", servo.ID, err)
 		}
@@ -515,6 +508,25 @@ func (s *Servo) ReadHomingOffset() (int, error) {
 	}
 
 	return raw, nil
+}
+
+// WriteAcceleration writes acceleration value to the servo
+func (s *Servo) WriteAcceleration(acceleration int) error {
+	err := s.WriteRegisterByName("acceleration", []byte{byte(acceleration & 0xFF)})
+	if err != nil {
+		return fmt.Errorf("failed to write acceleration for servo %d: %w", s.ID, err)
+	}
+
+	return nil
+}
+
+// ReadAcceleration reads acceleration value from the servo
+func (s *Servo) ReadAcceleration() (int, error) {
+	data, err := s.ReadRegisterByName("acceleration")
+	if err != nil {
+		return 0, fmt.Errorf("failed to read acceleration for servo %d: %w", s.ID, err)
+	}
+	return int(data[0]), nil
 }
 
 // ReadRegisterByName reads a register using its name from the servo model
