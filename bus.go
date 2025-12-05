@@ -240,6 +240,14 @@ func (b *Bus) ConfigureServosWithAcceleration(servos []*Servo, maxAcceleration, 
 		if err != nil {
 			return fmt.Errorf("failed to write return delay time for servo %d: %w", servo.ID, err)
 		}
+
+		if b.protocol == ProtocolV0 {
+			err = servo.WriteRegisterByName("maximum_acceleration", []byte{byte(maxAcceleration & 0xFF)})
+			if err != nil {
+				return fmt.Errorf("failed to write maximum acceleration for servo %d: %w", servo.ID, err)
+			}
+		}
+
 		err = servo.WriteAcceleration(acceleration)
 		if err != nil {
 			return fmt.Errorf("failed to write acceleration for servo %d: %w", servo.ID, err)
