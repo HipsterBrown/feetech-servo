@@ -102,21 +102,37 @@ func (g *ServoGroup) SetPositions(ctx context.Context, positions PositionMap) er
 	return g.bus.SyncWrite(ctx, RegGoalPosition.Address, 2, servoData)
 }
 
-// SetPositionsWithSpeed writes positions with speed to all servos.
-func (g *ServoGroup) SetPositionsWithSpeed(ctx context.Context, positions, speeds []int) error {
-	if len(positions) != len(g.servos) || len(speeds) != len(g.servos) {
-		return fmt.Errorf("array length mismatch")
+// SetPositionsWithSpeed writes positions with speed to servos.
+// Only servos present in BOTH positions and speeds maps are written (intersection).
+func (g *ServoGroup) SetPositionsWithSpeed(ctx context.Context, positions, speeds PositionMap) error {
+	if len(positions) == 0 || len(speeds) == 0 {
+		return nil // No-op for empty maps
 	}
 
 	proto := g.bus.Protocol()
-	servoData := make(map[int][]byte, len(g.servos))
+	servoData := make(map[int][]byte)
 
-	for i, s := range g.servos {
+	// Use intersection: only write servos present in both maps
+	for id, pos := range positions {
+		speed, hasSpeed := speeds[id]
+		if !hasSpeed {
+			continue // Skip servos without speed
+		}
+
+		// Validate servo ID exists in group
+		if g.ServoByID(id) == nil {
+			return fmt.Errorf("servo ID %d not in group", id)
+		}
+
 		data := make([]byte, 6)
-		copy(data[0:2], proto.EncodeWord(uint16(positions[i])))
+		copy(data[0:2], proto.EncodeWord(uint16(pos)))
 		copy(data[2:4], proto.EncodeWord(0)) // Time = 0
-		copy(data[4:6], proto.EncodeWord(uint16(speeds[i])))
-		servoData[s.ID()] = data
+		copy(data[4:6], proto.EncodeWord(uint16(speed)))
+		servoData[id] = data
+	}
+
+	if len(servoData) == 0 {
+		return nil // No servos in intersection
 	}
 
 	return g.bus.SyncWrite(ctx, RegGoalPosition.Address, 6, servoData)
