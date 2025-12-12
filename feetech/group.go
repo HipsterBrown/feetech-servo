@@ -341,8 +341,9 @@ func (g *ServoGroup) ReadRegister(ctx context.Context, registerName string) (map
 
 // WriteRegister writes a register to servos in the group using SyncWrite.
 // Writes only to servos that:
-//   1. Have the register in their model, AND
-//   2. Are present in the data map (intersection)
+//  1. Have the register in their model, AND
+//  2. Are present in the data map (intersection)
+//
 // Groups servos by (address, size) to handle heterogeneous groups efficiently.
 func (g *ServoGroup) WriteRegister(ctx context.Context, registerName string, data map[int][]byte) error {
 	if len(data) == 0 {
