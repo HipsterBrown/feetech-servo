@@ -257,9 +257,9 @@ func (g *ServoGroup) MoveTo(ctx context.Context, positions PositionMap, timeoutM
 	return result, nil
 }
 
-// WaitForStop waits for all servos to stop moving.
-// Returns the final positions. Timeout is in milliseconds.
-func (g *ServoGroup) WaitForStop(ctx context.Context, timeoutMs int) ([]int, error) {
+// WaitForStop waits for all servos in the group to stop moving.
+// Returns the final positions of all servos. Timeout is in milliseconds.
+func (g *ServoGroup) WaitForStop(ctx context.Context, timeoutMs int) (PositionMap, error) {
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -270,13 +270,13 @@ func (g *ServoGroup) WaitForStop(ctx context.Context, timeoutMs int) ([]int, err
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-timeout:
-			posMap, _ := g.Positions(ctx)
-			positions := make([]int, len(g.servos))
-			for i, s := range g.servos {
-				positions[i] = posMap[s.ID()]
-			}
-			return positions, fmt.Errorf("move timeout after %dms", timeoutMs)
+			pos, _ := g.Positions(ctx)
+			return pos, fmt.Errorf("move timeout after %dms", timeoutMs)
 		case <-ticker.C:
+			// Use SyncRead to check all servos at once
+			// Note: The moving status register varies by model
+			// For now, we'll keep the individual check approach
+			// but optimize it in a follow-up if register locations align
 			allStopped := true
 			for _, s := range g.servos {
 				moving, err := s.Moving(ctx)
@@ -290,15 +290,7 @@ func (g *ServoGroup) WaitForStop(ctx context.Context, timeoutMs int) ([]int, err
 			}
 
 			if allStopped {
-				posMap, err := g.Positions(ctx)
-				if err != nil {
-					return nil, err
-				}
-				positions := make([]int, len(g.servos))
-				for i, s := range g.servos {
-					positions[i] = posMap[s.ID()]
-				}
-				return positions, nil
+				return g.Positions(ctx)
 			}
 		}
 	}
