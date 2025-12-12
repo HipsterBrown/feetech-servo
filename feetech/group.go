@@ -220,12 +220,6 @@ func (g *ServoGroup) RegWritePositions(ctx context.Context, positions PositionMa
 	return nil
 }
 
-// MoveResult contains the result of a move operation.
-type MoveResult struct {
-	Positions []int
-	Err       error
-}
-
 // MoveTo moves servos to target positions and waits for completion.
 // Returns the final positions for only the servos that were commanded.
 // Timeout is in milliseconds.
