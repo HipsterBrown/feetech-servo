@@ -195,18 +195,25 @@ func (g *ServoGroup) DisableAll(ctx context.Context) error {
 // PositionMap is a map of servo ID to position value.
 type PositionMap map[int]int
 
-// RegWritePositions buffers position writes to all servos.
+// RegWritePositions buffers position writes to servos.
 // Call bus.Action() to execute them simultaneously.
-func (g *ServoGroup) RegWritePositions(ctx context.Context, positions []int) error {
-	if len(positions) != len(g.servos) {
-		return fmt.Errorf("position count mismatch: expected %d, got %d", len(g.servos), len(positions))
+// Only servos with IDs present in the positions map are written.
+func (g *ServoGroup) RegWritePositions(ctx context.Context, positions PositionMap) error {
+	if len(positions) == 0 {
+		return nil // No-op for empty map
 	}
 
 	proto := g.bus.Protocol()
-	for i, s := range g.servos {
-		data := proto.EncodeWord(uint16(positions[i]))
-		if err := g.bus.RegWrite(ctx, s.ID(), RegGoalPosition.Address, data); err != nil {
-			return fmt.Errorf("servo %d: %w", s.ID(), err)
+	for id, pos := range positions {
+		// Validate servo ID exists in group
+		servo := g.ServoByID(id)
+		if servo == nil {
+			return fmt.Errorf("servo ID %d not in group", id)
+		}
+
+		data := proto.EncodeWord(uint16(pos))
+		if err := g.bus.RegWrite(ctx, id, RegGoalPosition.Address, data); err != nil {
+			return fmt.Errorf("servo %d: %w", id, err)
 		}
 	}
 
