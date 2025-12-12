@@ -226,24 +226,35 @@ type MoveResult struct {
 	Err       error
 }
 
-// MoveTo moves all servos to target positions and waits for completion.
-// Returns the final positions. Timeout is in milliseconds.
-// TODO(Task 6): This will be updated to use PositionMap in Task 6
-func (g *ServoGroup) MoveTo(ctx context.Context, positions []int, timeoutMs int) ([]int, error) {
-	// Temporary conversion to PositionMap for compatibility
-	posMap := make(PositionMap, len(positions))
-	for i, pos := range positions {
-		if i >= len(g.servos) {
-			break
-		}
-		posMap[g.servos[i].ID()] = pos
-	}
-
-	if err := g.SetPositions(ctx, posMap); err != nil {
+// MoveTo moves servos to target positions and waits for completion.
+// Returns the final positions for only the servos that were commanded.
+// Timeout is in milliseconds.
+func (g *ServoGroup) MoveTo(ctx context.Context, positions PositionMap, timeoutMs int) (PositionMap, error) {
+	if err := g.SetPositions(ctx, positions); err != nil {
 		return nil, err
 	}
 
-	return g.WaitForStop(ctx, timeoutMs)
+	// Wait for all servos in group to stop
+	_, err := g.WaitForStop(ctx, timeoutMs)
+	if err != nil {
+		return nil, err
+	}
+
+	// Read final positions for only the commanded servos
+	allPositions, err := g.Positions(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Return only positions for servos that were commanded
+	result := make(PositionMap, len(positions))
+	for id := range positions {
+		if pos, ok := allPositions[id]; ok {
+			result[id] = pos
+		}
+	}
+
+	return result, nil
 }
 
 // WaitForStop waits for all servos to stop moving.
