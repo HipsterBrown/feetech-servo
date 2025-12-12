@@ -338,3 +338,53 @@ func (g *ServoGroup) ReadRegister(ctx context.Context, registerName string) (map
 
 	return result, nil
 }
+
+// WriteRegister writes a register to servos in the group using SyncWrite.
+// Writes only to servos that:
+//   1. Have the register in their model, AND
+//   2. Are present in the data map (intersection)
+// Groups servos by (address, size) to handle heterogeneous groups efficiently.
+func (g *ServoGroup) WriteRegister(ctx context.Context, registerName string, data map[int][]byte) error {
+	if len(data) == 0 {
+		return nil // No-op for empty map
+	}
+
+	// Group servos by (address, size) tuple, filtering by data map
+	type addrSize struct {
+		addr byte
+		size int
+	}
+	groups := make(map[addrSize]map[int][]byte)
+
+	for id, bytes := range data {
+		servo := g.ServoByID(id)
+		if servo == nil {
+			return fmt.Errorf("servo ID %d not in group", id)
+		}
+
+		reg, ok := servo.model.Registers[registerName]
+		if !ok {
+			// Skip servos that don't have this register
+			continue
+		}
+
+		key := addrSize{addr: reg.Address, size: reg.Size}
+		if groups[key] == nil {
+			groups[key] = make(map[int][]byte)
+		}
+		groups[key][id] = bytes
+	}
+
+	if len(groups) == 0 {
+		return nil // No servos to write (none have the register)
+	}
+
+	// Make one SyncWrite per unique (address, size) combination
+	for key, servoData := range groups {
+		if err := g.bus.SyncWrite(ctx, key.addr, key.size, servoData); err != nil {
+			return fmt.Errorf("sync write for %q at addr=%d size=%d: %w", registerName, key.addr, key.size, err)
+		}
+	}
+
+	return nil
+}
