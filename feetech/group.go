@@ -295,3 +295,46 @@ func (g *ServoGroup) WaitForStop(ctx context.Context, timeoutMs int) (PositionMa
 		}
 	}
 }
+
+// ReadRegister reads a register from servos in the group using SyncRead.
+// Returns data only for servos that have the register in their model.
+// Groups servos by (address, size) to handle heterogeneous groups efficiently.
+func (g *ServoGroup) ReadRegister(ctx context.Context, registerName string) (map[int][]byte, error) {
+	// Group servos by (address, size) tuple
+	type addrSize struct {
+		addr byte
+		size int
+	}
+	groups := make(map[addrSize][]int)
+
+	for _, servo := range g.servos {
+		reg, ok := servo.model.Registers[registerName]
+		if !ok {
+			// Skip servos that don't have this register
+			continue
+		}
+
+		key := addrSize{addr: reg.Address, size: reg.Size}
+		groups[key] = append(groups[key], servo.ID())
+	}
+
+	if len(groups) == 0 {
+		return nil, fmt.Errorf("no servos in group have register %q", registerName)
+	}
+
+	// Make one SyncRead per unique (address, size) combination
+	result := make(map[int][]byte)
+	for key, ids := range groups {
+		data, err := g.bus.SyncRead(ctx, key.addr, key.size, ids)
+		if err != nil {
+			return nil, fmt.Errorf("sync read for %q at addr=%d size=%d: %w", registerName, key.addr, key.size, err)
+		}
+
+		// Merge results
+		for id, bytes := range data {
+			result[id] = bytes
+		}
+	}
+
+	return result, nil
+}
