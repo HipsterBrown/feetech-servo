@@ -3,6 +3,7 @@ package feetech
 import (
 	"context"
 	"fmt"
+	"maps"
 	"time"
 )
 
@@ -325,9 +326,7 @@ func (g *ServoGroup) ReadRegister(ctx context.Context, registerName string) (map
 		}
 
 		// Merge results
-		for id, bytes := range data {
-			result[id] = bytes
-		}
+		maps.Copy(result, data)
 	}
 
 	return result, nil
