@@ -203,7 +203,7 @@ type MoveResult struct {
 
 // MoveTo moves all servos to target positions and waits for completion.
 // Returns the final positions. Timeout is in milliseconds.
-func (g *ServoGroup) MoveTo(ctx context.Context, positions []int, timeoutMs int) (PositionMap, error) {
+func (g *ServoGroup) MoveTo(ctx context.Context, positions []int, timeoutMs int) ([]int, error) {
 	if err := g.SetPositions(ctx, positions); err != nil {
 		return nil, err
 	}
@@ -213,7 +213,7 @@ func (g *ServoGroup) MoveTo(ctx context.Context, positions []int, timeoutMs int)
 
 // WaitForStop waits for all servos to stop moving.
 // Returns the final positions. Timeout is in milliseconds.
-func (g *ServoGroup) WaitForStop(ctx context.Context, timeoutMs int) (PositionMap, error) {
+func (g *ServoGroup) WaitForStop(ctx context.Context, timeoutMs int) ([]int, error) {
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -224,8 +224,12 @@ func (g *ServoGroup) WaitForStop(ctx context.Context, timeoutMs int) (PositionMa
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-timeout:
-			pos, _ := g.Positions(ctx)
-			return pos, fmt.Errorf("move timeout after %dms", timeoutMs)
+			posMap, _ := g.Positions(ctx)
+			positions := make([]int, len(g.servos))
+			for i, s := range g.servos {
+				positions[i] = posMap[s.ID()]
+			}
+			return positions, fmt.Errorf("move timeout after %dms", timeoutMs)
 		case <-ticker.C:
 			allStopped := true
 			for _, s := range g.servos {
@@ -240,7 +244,15 @@ func (g *ServoGroup) WaitForStop(ctx context.Context, timeoutMs int) (PositionMa
 			}
 
 			if allStopped {
-				return g.Positions(ctx)
+				posMap, err := g.Positions(ctx)
+				if err != nil {
+					return nil, err
+				}
+				positions := make([]int, len(g.servos))
+				for i, s := range g.servos {
+					positions[i] = posMap[s.ID()]
+				}
+				return positions, nil
 			}
 		}
 	}
