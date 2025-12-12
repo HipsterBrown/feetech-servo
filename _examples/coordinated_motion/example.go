@@ -22,7 +22,7 @@ func main() {
 	group.EnableAll(ctx)
 
 	// Use reg write + action for perfectly synchronized motion
-	positions := []int{1000, 2000, 3000}
+	positions := feetech.PositionMap{1: 1000, 2: 2000, 3: 3000}
 
 	// Buffer writes to each servo
 	group.RegWritePositions(ctx, positions)
