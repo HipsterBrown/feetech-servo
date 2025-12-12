@@ -81,17 +81,22 @@ func (g *ServoGroup) Positions(ctx context.Context) (PositionMap, error) {
 	return positions, nil
 }
 
-// SetPositions writes positions to all servos using sync write.
-// positions must have the same length as the group.
-func (g *ServoGroup) SetPositions(ctx context.Context, positions []int) error {
-	if len(positions) != len(g.servos) {
-		return fmt.Errorf("position count mismatch: expected %d, got %d", len(g.servos), len(positions))
+// SetPositions writes positions to servos using sync write.
+// Only servos with IDs present in the positions map are written.
+func (g *ServoGroup) SetPositions(ctx context.Context, positions PositionMap) error {
+	if len(positions) == 0 {
+		return nil // No-op for empty map
 	}
 
 	proto := g.bus.Protocol()
-	servoData := make(map[int][]byte, len(g.servos))
-	for i, s := range g.servos {
-		servoData[s.ID()] = proto.EncodeWord(uint16(positions[i]))
+	servoData := make(map[int][]byte, len(positions))
+
+	for id, pos := range positions {
+		// Validate servo ID exists in group
+		if g.ServoByID(id) == nil {
+			return fmt.Errorf("servo ID %d not in group", id)
+		}
+		servoData[id] = proto.EncodeWord(uint16(pos))
 	}
 
 	return g.bus.SyncWrite(ctx, RegGoalPosition.Address, 2, servoData)
@@ -158,25 +163,6 @@ func (g *ServoGroup) DisableAll(ctx context.Context) error {
 // PositionMap is a map of servo ID to position value.
 type PositionMap map[int]int
 
-// SetPositionsMap writes positions from a map.
-// Only servos in the group with matching IDs in the map are written.
-func (g *ServoGroup) SetPositionsMap(ctx context.Context, positions PositionMap) error {
-	proto := g.bus.Protocol()
-	servoData := make(map[int][]byte)
-
-	for _, s := range g.servos {
-		if pos, ok := positions[s.ID()]; ok {
-			servoData[s.ID()] = proto.EncodeWord(uint16(pos))
-		}
-	}
-
-	if len(servoData) == 0 {
-		return nil
-	}
-
-	return g.bus.SyncWrite(ctx, RegGoalPosition.Address, 2, servoData)
-}
-
 // RegWritePositions buffers position writes to all servos.
 // Call bus.Action() to execute them simultaneously.
 func (g *ServoGroup) RegWritePositions(ctx context.Context, positions []int) error {
@@ -203,8 +189,18 @@ type MoveResult struct {
 
 // MoveTo moves all servos to target positions and waits for completion.
 // Returns the final positions. Timeout is in milliseconds.
+// TODO(Task 6): This will be updated to use PositionMap in Task 6
 func (g *ServoGroup) MoveTo(ctx context.Context, positions []int, timeoutMs int) ([]int, error) {
-	if err := g.SetPositions(ctx, positions); err != nil {
+	// Temporary conversion to PositionMap for compatibility
+	posMap := make(PositionMap, len(positions))
+	for i, pos := range positions {
+		if i >= len(g.servos) {
+			break
+		}
+		posMap[g.servos[i].ID()] = pos
+	}
+
+	if err := g.SetPositions(ctx, posMap); err != nil {
 		return nil, err
 	}
 
