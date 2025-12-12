@@ -25,19 +25,12 @@ func main() {
 	// Enable all servos
 	group.EnableAll(ctx)
 
-	// Move all servos to positions
-	// positions := []int{2048, 2048, 2048, 2048, 2048}
-	positions := []int{2000, 2000, 2000, 2000, 2000}
-	// group.SetPositions(ctx, positions)
-	group.SetPositionsWithSpeed(ctx, positions, []int{200, 200, 200, 200, 200})
+	// Move servos to positions using map
+	positions := feetech.PositionMap{1: 2000, 2: 2000, 3: 2000, 4: 2000, 5: 2000}
+	speeds := feetech.PositionMap{1: 200, 2: 200, 3: 200, 4: 200, 5: 200}
+	group.SetPositionsWithSpeed(ctx, positions, speeds)
 
 	// Read all positions efficiently using sync read
 	currentPos, _ := group.Positions(ctx)
 	fmt.Printf("Positions: %v\n", currentPos)
-
-	// Move with speed control
-	// group.SetPositionsWithSpeed(ctx,
-	// 	[]int{1024, 1024, 1024, 1024, 1024},
-	// 	[]int{100, 100, 100, 100, 100},
-	// )
 }
