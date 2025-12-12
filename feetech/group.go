@@ -65,19 +65,17 @@ func (g *ServoGroup) ServoByID(id int) *Servo {
 }
 
 // Positions reads positions from all servos using sync read.
-// Returns a slice in the same order as the group's servos.
-func (g *ServoGroup) Positions(ctx context.Context) ([]int, error) {
+// Returns a map of servo ID to position value.
+func (g *ServoGroup) Positions(ctx context.Context) (PositionMap, error) {
 	data, err := g.bus.SyncRead(ctx, RegPresentPosition.Address, RegPresentPosition.Size, g.ids)
 	if err != nil {
 		return nil, err
 	}
 
 	proto := g.bus.Protocol()
-	positions := make([]int, len(g.servos))
-	for i, s := range g.servos {
-		if d, ok := data[s.ID()]; ok {
-			positions[i] = int(proto.DecodeWord(d))
-		}
+	positions := make(PositionMap, len(data))
+	for id, d := range data {
+		positions[id] = int(proto.DecodeWord(d))
 	}
 
 	return positions, nil
@@ -160,22 +158,6 @@ func (g *ServoGroup) DisableAll(ctx context.Context) error {
 // PositionMap is a map of servo ID to position value.
 type PositionMap map[int]int
 
-// PositionsMap reads positions and returns them as a map.
-func (g *ServoGroup) PositionsMap(ctx context.Context) (PositionMap, error) {
-	data, err := g.bus.SyncRead(ctx, RegPresentPosition.Address, RegPresentPosition.Size, g.ids)
-	if err != nil {
-		return nil, err
-	}
-
-	proto := g.bus.Protocol()
-	result := make(PositionMap, len(data))
-	for id, d := range data {
-		result[id] = int(proto.DecodeWord(d))
-	}
-
-	return result, nil
-}
-
 // SetPositionsMap writes positions from a map.
 // Only servos in the group with matching IDs in the map are written.
 func (g *ServoGroup) SetPositionsMap(ctx context.Context, positions PositionMap) error {
@@ -221,7 +203,7 @@ type MoveResult struct {
 
 // MoveTo moves all servos to target positions and waits for completion.
 // Returns the final positions. Timeout is in milliseconds.
-func (g *ServoGroup) MoveTo(ctx context.Context, positions []int, timeoutMs int) ([]int, error) {
+func (g *ServoGroup) MoveTo(ctx context.Context, positions []int, timeoutMs int) (PositionMap, error) {
 	if err := g.SetPositions(ctx, positions); err != nil {
 		return nil, err
 	}
@@ -231,7 +213,7 @@ func (g *ServoGroup) MoveTo(ctx context.Context, positions []int, timeoutMs int)
 
 // WaitForStop waits for all servos to stop moving.
 // Returns the final positions. Timeout is in milliseconds.
-func (g *ServoGroup) WaitForStop(ctx context.Context, timeoutMs int) ([]int, error) {
+func (g *ServoGroup) WaitForStop(ctx context.Context, timeoutMs int) (PositionMap, error) {
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 
