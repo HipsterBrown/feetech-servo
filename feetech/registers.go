@@ -62,6 +62,9 @@ var (
 	RegServoStatus     = Register{Address: 65, Size: 1, ReadOnly: true}
 	RegMoving          = Register{Address: 66, Size: 1, ReadOnly: true}
 	RegPresentCurrent  = Register{Address: 69, Size: 2, ReadOnly: true}
+
+	// Factory
+	RegMaxAcceleration = Register{Address: 85, Size: 1}
 )
 
 // Model represents a servo model specification.
@@ -255,6 +258,7 @@ func getCommonRegister(name string) (Register, bool) {
 		"p_gain":             RegPGain,
 		"d_gain":             RegDGain,
 		"i_gain":             RegIGain,
+		"max_acceleration":   RegMaxAcceleration,
 	}
 
 	reg, ok := commonRegisters[name]
