@@ -5,11 +5,13 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/hipsterbrown/feetech-servo/transports"
 )
 
 func TestBus_Ping(t *testing.T) {
 	// Set up mock with ping response + model number read response
-	mock := &MockTransport{}
+	mock := &transports.MockTransport{}
 	readIdx := 0
 	responses := [][]byte{
 		{0xFF, 0xFF, 0x01, 0x02, 0x00, 0xFC},             // Ping response
@@ -55,7 +57,7 @@ func TestBus_Ping(t *testing.T) {
 
 func TestBus_ReadRegister(t *testing.T) {
 	// Mock response for reading 2 bytes
-	mock := &MockTransport{
+	mock := &transports.MockTransport{
 		ReadData: []byte{0xFF, 0xFF, 0x01, 0x04, 0x00, 0x00, 0x08, 0xF2}, // Position 2048
 	}
 
@@ -82,7 +84,7 @@ func TestBus_ReadRegister(t *testing.T) {
 }
 
 func TestBus_WriteRegister(t *testing.T) {
-	mock := &MockTransport{
+	mock := &transports.MockTransport{
 		ReadData: []byte{0xFF, 0xFF, 0x01, 0x02, 0x00, 0xFC}, // Ack response
 	}
 
@@ -109,7 +111,7 @@ func TestBus_WriteRegister(t *testing.T) {
 }
 
 func TestBus_SyncWrite(t *testing.T) {
-	mock := &MockTransport{}
+	mock := &transports.MockTransport{}
 
 	bus, _ := NewBus(BusConfig{
 		Transport: mock,
@@ -139,7 +141,7 @@ func TestBus_SyncWrite(t *testing.T) {
 
 func TestBus_SyncRead(t *testing.T) {
 	// Mock two servo responses
-	mock := &MockTransport{
+	mock := &transports.MockTransport{
 		ReadData: []byte{
 			0xFF, 0xFF, 0x01, 0x04, 0x00, 0x00, 0x08, 0xF2, // ID 1, position 2048
 			0xFF, 0xFF, 0x02, 0x04, 0x00, 0x00, 0x04, 0xF5, // ID 2, position 1024
@@ -176,7 +178,7 @@ func TestBus_SyncRead(t *testing.T) {
 }
 
 func TestBus_SyncRead_SCSUnsupported(t *testing.T) {
-	mock := &MockTransport{}
+	mock := &transports.MockTransport{}
 
 	bus, _ := NewBus(BusConfig{
 		Transport: mock,
@@ -192,7 +194,7 @@ func TestBus_SyncRead_SCSUnsupported(t *testing.T) {
 }
 
 func TestBus_InvalidID(t *testing.T) {
-	mock := &MockTransport{}
+	mock := &transports.MockTransport{}
 	bus, _ := NewBus(BusConfig{Transport: mock})
 	defer bus.Close()
 
@@ -211,7 +213,7 @@ func TestBus_InvalidID(t *testing.T) {
 }
 
 func TestBus_Close(t *testing.T) {
-	mock := &MockTransport{}
+	mock := &transports.MockTransport{}
 	bus, _ := NewBus(BusConfig{Transport: mock})
 
 	err := bus.Close()
@@ -230,7 +232,7 @@ func TestBus_Close(t *testing.T) {
 }
 
 func TestBus_ClosedOperations(t *testing.T) {
-	mock := &MockTransport{}
+	mock := &transports.MockTransport{}
 	bus, _ := NewBus(BusConfig{Transport: mock})
 	bus.Close()
 
@@ -243,7 +245,7 @@ func TestBus_ClosedOperations(t *testing.T) {
 }
 
 func TestServo_Position(t *testing.T) {
-	mock := &MockTransport{
+	mock := &transports.MockTransport{
 		ReadData: []byte{0xFF, 0xFF, 0x01, 0x04, 0x00, 0x00, 0x08, 0xF2},
 	}
 
@@ -267,7 +269,7 @@ func TestServo_Position(t *testing.T) {
 }
 
 func TestServo_SetPosition(t *testing.T) {
-	mock := &MockTransport{
+	mock := &transports.MockTransport{
 		ReadData: []byte{0xFF, 0xFF, 0x01, 0x02, 0x00, 0xFC},
 	}
 
@@ -294,7 +296,7 @@ func TestServo_SetPosition(t *testing.T) {
 }
 
 func TestServo_TorqueEnable(t *testing.T) {
-	mock := &MockTransport{
+	mock := &transports.MockTransport{
 		ReadData: []byte{0xFF, 0xFF, 0x01, 0x02, 0x00, 0xFC},
 	}
 
@@ -323,7 +325,7 @@ func TestServo_TorqueEnable(t *testing.T) {
 
 func TestBus_ContextCancellation(t *testing.T) {
 	// Simulate slow transport
-	mock := &MockTransport{
+	mock := &transports.MockTransport{
 		ReadFunc: func(p []byte) (int, error) {
 			time.Sleep(500 * time.Millisecond)
 			return 0, nil

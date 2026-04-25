@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/hipsterbrown/feetech-servo/transports"
 )
 
 // Bus manages communication with servos on a Feetech bus.
@@ -63,7 +65,7 @@ func NewBus(cfg BusConfig) (*Bus, error) {
 			return nil, errors.New("either Transport or Port must be specified")
 		}
 		var err error
-		transport, err = OpenSerial(SerialConfig{
+		transport, err = transports.OpenSerial(transports.SerialConfig{
 			Port:     cfg.Port,
 			BaudRate: cfg.BaudRate,
 			Timeout:  cfg.Timeout,

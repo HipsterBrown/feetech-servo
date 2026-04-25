@@ -6,11 +6,12 @@ import (
 	"log"
 
 	"github.com/hipsterbrown/feetech-servo/feetech"
+	"github.com/hipsterbrown/feetech-servo/transports"
 )
 
 func main() {
 	// For testing without hardware
-	mock := &feetech.MockTransport{
+	mock := &transports.MockTransport{
 		// Pre-load a ping response
 		ReadData: []byte{0xFF, 0xFF, 0x01, 0x02, 0x00, 0xFC},
 	}

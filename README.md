@@ -570,6 +570,71 @@ func main() {
 }
 ```
 
+### TinyGo Support through MCU UART Transport
+
+```go
+//go:build baremetal
+
+package main
+
+import (
+	"machine"
+
+	"context"
+	"time"
+
+	"github.com/hipsterbrown/feetech-servo/feetech"
+)
+
+func main() {
+	if err := machine.UART0.Configure(machine.UARTConfig{
+		BaudRate: 1000000,
+		TX:       machine.UART_TX_PIN,
+		RX:       machine.UART_RX_PIN,
+	}); err != nil {
+		failure("Failed to configure UART:" + err.Error())
+	}
+
+	println("Starting servo example...")
+	ctx := context.Background()
+
+	// Create a new servo bus
+	bus, err := feetech.NewBus(feetech.BusConfig{
+		Port:     "0",
+		BaudRate: 1000000,
+		Protocol: feetech.ProtocolSTS,
+	})
+	if err != nil {
+		failure("Failed to create bus:" + err.Error())
+	}
+	defer bus.Close()
+
+	// Create a servo instance (defaults to STS3215)
+	servo := feetech.NewServo(bus, 1, nil)
+
+	// Detect model
+	if err := servo.DetectModel(ctx); err != nil {
+		failure("Failed to detect model:" + err.Error())
+	}
+	println("Connected to:", servo.Model().Name)
+
+	// Enable torque and move to center position
+	servo.Enable(ctx)
+	servo.SetPosition(ctx, 2048) // Center position for 12-bit servo
+
+	// Read current position
+	pos, _ := servo.Position(ctx)
+	println("Current position:", pos)
+}
+
+func failure(msg string) {
+	for {
+		println(msg)
+		time.Sleep(5 * time.Second)
+	}
+}
+```
+
 ### Testing with MockTransport
 
 ```go
