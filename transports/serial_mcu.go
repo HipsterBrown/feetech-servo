@@ -3,14 +3,14 @@
 package transports
 
 import (
-  "errors"
+	"errors"
 	"fmt"
-  "machine"
-  "time"
+	"machine"
+	"time"
 )
 
-type MCUTransport {
-  *machine.UART
+type MCUTransport struct {
+	*machine.UART
 }
 
 type SerialConfig struct {
@@ -35,28 +35,28 @@ func OpenSerial(cfg SerialConfig) (*MCUTransport, error) {
 		cfg.Timeout = time.Second
 	}
 
-  switch cfg.Port {
-  case "0":
-    currentTransport = MCUTransport {machine.UART0}
-  case "1":
-    currentTransport = MCUTransport{machine.UART1}
-  default:
+	switch cfg.Port {
+	case "0":
+		currentTransport = MCUTransport{machine.UART0}
+	case "1":
+		currentTransport = MCUTransport{machine.UART1}
+	default:
 		return nil, fmt.Errorf("unknown UART %s", cfg.Port)
-  }
+	}
 
-  currentTransport.SetBaudRate(uint32(cfg.BaudRate))
+	currentTransport.SetBaudRate(uint32(cfg.BaudRate))
 
-  return &currentTransport, nil
+	return &currentTransport, nil
 }
 
-func (t *MCUTransport) SetReadTimeout(t time.Duration) error {
-  return nil
+func (t *MCUTransport) SetReadTimeout(time.Duration) error {
+	return nil
 }
 
 func (t *MCUTransport) Close() error {
-  return nil
+	return nil
 }
 
 func (t *MCUTransport) Flush() error {
-  return nil
+	return nil
 }
