@@ -4,7 +4,6 @@ package transports
 
 import (
 	"errors"
-	"fmt"
 	"machine"
 	"time"
 )
@@ -14,7 +13,8 @@ type MCUTransport struct {
 }
 
 type SerialConfig struct {
-	Port     string
+	Device   *machine.UART
+	Port     string // Ignored on MCU, but required for interface compatibility
 	BaudRate int
 	Timeout  time.Duration
 }
@@ -23,8 +23,8 @@ var currentTransport MCUTransport
 
 // OpenSerial gets a UART port with the given configuration.
 func OpenSerial(cfg SerialConfig) (*MCUTransport, error) {
-	if cfg.Port == "" {
-		return nil, errors.New("serial port path is required")
+	if cfg.Device == nil {
+		return nil, errors.New("UART device is required")
 	}
 
 	if cfg.BaudRate == 0 {
@@ -35,15 +35,7 @@ func OpenSerial(cfg SerialConfig) (*MCUTransport, error) {
 		cfg.Timeout = time.Second
 	}
 
-	switch cfg.Port {
-	case "0":
-		currentTransport = MCUTransport{machine.UART0}
-	case "1":
-		currentTransport = MCUTransport{machine.UART1}
-	default:
-		return nil, fmt.Errorf("unknown UART %s", cfg.Port)
-	}
-
+	currentTransport = MCUTransport{cfg.Device}
 	currentTransport.SetBaudRate(uint32(cfg.BaudRate))
 
 	return &currentTransport, nil

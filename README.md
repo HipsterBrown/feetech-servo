@@ -598,11 +598,18 @@ func main() {
 	println("Starting servo example...")
 	ctx := context.Background()
 
+	// Create a new servo transport
+	transport, err := transports.OpenSerial(transports.SerialConfig{
+		Device:   machine.UART0,
+		BaudRate: 1000000,
+	})
+	if err != nil {
+		failure("Failed to open serial transport:" + err.Error())
+	}
 	// Create a new servo bus
 	bus, err := feetech.NewBus(feetech.BusConfig{
-		Port:     "0",
-		BaudRate: 1000000,
-		Protocol: feetech.ProtocolSTS,
+		Transport: transport,
+		Protocol:  feetech.ProtocolSTS,
 	})
 	if err != nil {
 		failure("Failed to create bus:" + err.Error())
