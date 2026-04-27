@@ -8,6 +8,9 @@ type Register struct {
 	// SignBit indicates which bit is the sign bit for sign-magnitude encoding.
 	// 0 means no sign-magnitude encoding (standard two's complement or unsigned).
 	SignBit int
+	// EEPROM is true when the register is in EEPROM space and writes must be
+	// guarded by the lock-register dance (see Servo.writeEEPROM).
+	EEPROM bool
 }
 
 // Common register addresses shared across most Feetech servos.
