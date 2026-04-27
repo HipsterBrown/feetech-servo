@@ -142,11 +142,11 @@ var (
 
 // SCS series has different register addresses for some values.
 var scs0009Registers = map[string]Register{
-	"model_number":     {Address: 3, Size: 2, ReadOnly: true},
-	"id":               {Address: 5, Size: 1},
-	"baud_rate":        {Address: 6, Size: 1},
-	"min_angle_limit":  {Address: 9, Size: 2},
-	"max_angle_limit":  {Address: 11, Size: 2},
+	"model_number":     {Address: 3, Size: 2, ReadOnly: true, EEPROM: true},
+	"id":               {Address: 5, Size: 1, EEPROM: true},
+	"baud_rate":        {Address: 6, Size: 1, EEPROM: true},
+	"min_angle_limit":  {Address: 9, Size: 2, EEPROM: true},
+	"max_angle_limit":  {Address: 11, Size: 2, EEPROM: true},
 	"torque_enable":    {Address: 40, Size: 1},
 	"goal_position":    {Address: 42, Size: 2},
 	"running_time":     {Address: 44, Size: 2}, // Different name than STS
