@@ -245,3 +245,43 @@ func TestServo_SetOperatingMode_AutoUnlocks(t *testing.T) {
 		t.Errorf("mode addr: got %02X want %02X", mock.WriteData[8+5], RegOperatingMode.Address)
 	}
 }
+
+// TestServo_SCS_LockUsesAddr48 verifies that on a Bus configured for ProtocolSCS
+// using ModelSCS0009, the lock writes target addr 48, not addr 55.
+func TestServo_SCS_LockUsesAddr48(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: ackPacket(1)}, {Reply: ackPacket(1)}, {Reply: ackPacket(1)},
+		},
+	}
+	bus, err := NewBus(BusConfig{
+		Transport: mock,
+		Protocol:  ProtocolSCS,
+		Timeout:   100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	scs, _ := GetModel("scs0009")
+	servo := NewServo(bus, 1, scs)
+
+	if err := servo.WriteRegister(context.Background(), "id", []byte{5}); err != nil {
+		t.Fatalf("WriteRegister: %v", err)
+	}
+
+	// Three 8-byte packets.
+	if len(mock.WriteData) != 24 {
+		t.Fatalf("expected 24 bytes, got %d: %X", len(mock.WriteData), mock.WriteData)
+	}
+	// Packet 1: unlock at addr 48 (0x30).
+	if mock.WriteData[5] != 48 {
+		t.Errorf("packet 1 lock addr: got %02X want 30 (48)", mock.WriteData[5])
+	}
+	// Packet 3: re-lock at addr 48.
+	if mock.WriteData[16+5] != 48 {
+		t.Errorf("packet 3 lock addr: got %02X want 30 (48)", mock.WriteData[16+5])
+	}
+}
