@@ -2,6 +2,7 @@ package feetech
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -213,7 +214,7 @@ func (s *Servo) OperatingMode(ctx context.Context) (int, error) {
 // SetOperatingMode sets the operating mode.
 // Must disable torque first.
 func (s *Servo) SetOperatingMode(ctx context.Context, mode int) error {
-	return s.bus.WriteRegister(ctx, s.id, RegOperatingMode.Address, []byte{byte(mode)})
+	return s.writeRegister(ctx, RegOperatingMode, []byte{byte(mode)})
 }
 
 // PositionLimits reads the min and max position limits.
@@ -236,13 +237,14 @@ func (s *Servo) PositionLimits(ctx context.Context) (min, max int, err error) {
 func (s *Servo) SetPositionLimits(ctx context.Context, min, max int) error {
 	proto := s.bus.Protocol()
 
-	if err := s.bus.WriteRegister(ctx, s.id, RegMinAngleLimit.Address, proto.EncodeWord(uint16(min))); err != nil {
+	if err := s.writeRegister(ctx, RegMinAngleLimit, proto.EncodeWord(uint16(min))); err != nil {
 		return err
 	}
-	return s.bus.WriteRegister(ctx, s.id, RegMaxAngleLimit.Address, proto.EncodeWord(uint16(max)))
+	return s.writeRegister(ctx, RegMaxAngleLimit, proto.EncodeWord(uint16(max)))
 }
 
-// EEPROM Configuration (requires torque disabled and lock disabled)
+// EEPROM Configuration — unlock is handled automatically. SetID and SetBaudRate
+// also disable torque first.
 
 // SetID changes the servo's ID.
 // The servo object is updated with the new ID on success.
@@ -256,7 +258,7 @@ func (s *Servo) SetID(ctx context.Context, newID int) error {
 		return fmt.Errorf("failed to disable torque: %w", err)
 	}
 
-	if err := s.bus.WriteRegister(ctx, s.id, RegID.Address, []byte{byte(newID)}); err != nil {
+	if err := s.writeRegister(ctx, RegID, []byte{byte(newID)}); err != nil {
 		return err
 	}
 
@@ -277,7 +279,7 @@ func (s *Servo) SetBaudRate(ctx context.Context, baudRate int) error {
 		return fmt.Errorf("failed to disable torque: %w", err)
 	}
 
-	return s.bus.WriteRegister(ctx, s.id, RegBaudRate.Address, []byte{byte(idx)})
+	return s.writeRegister(ctx, RegBaudRate, []byte{byte(idx)})
 }
 
 // ReadRegister reads a named register.
@@ -301,7 +303,7 @@ func (s *Servo) WriteRegister(ctx context.Context, name string, data []byte) err
 	if len(data) != reg.Size {
 		return fmt.Errorf("data size mismatch: expected %d bytes, got %d", reg.Size, len(data))
 	}
-	return s.bus.WriteRegister(ctx, s.id, reg.Address, data)
+	return s.writeRegister(ctx, reg, data)
 }
 
 // Sign-magnitude encoding helpers
@@ -328,4 +330,46 @@ func encodeSignMagnitude(value, signBit int) int {
 		return (-value) | signMask
 	}
 	return value
+}
+
+// writeRegister routes EEPROM-region writes through the lock dance and SRAM
+// writes through the bus directly.
+func (s *Servo) writeRegister(ctx context.Context, reg Register, data []byte) error {
+	if reg.EEPROM {
+		return s.writeEEPROM(ctx, reg.Address, data)
+	}
+	return s.bus.WriteRegister(ctx, s.id, reg.Address, data)
+}
+
+// writeEEPROM unlocks the lock register, performs the write, and re-locks. On
+// a write failure, the re-lock is still attempted; errors are joined.
+//
+// If the model has no lock register (LockAddress == 0), this delegates to a
+// plain bus write.
+func (s *Servo) writeEEPROM(ctx context.Context, address byte, data []byte) error {
+	if s.model.LockAddress == 0 {
+		return s.bus.WriteRegister(ctx, s.id, address, data)
+	}
+
+	// Step 1: unlock. If this fails, abort — no further packets are sent and
+	// the servo is left in its existing locked state.
+	if err := s.bus.WriteRegister(ctx, s.id, s.model.LockAddress, []byte{0}); err != nil {
+		return err
+	}
+
+	// Step 2: target write.
+	writeErr := s.bus.WriteRegister(ctx, s.id, address, data)
+
+	// Step 3: re-lock. Always attempted, even if step 2 failed.
+	relockErr := s.bus.WriteRegister(ctx, s.id, s.model.LockAddress, []byte{1})
+
+	switch {
+	case writeErr != nil && relockErr != nil:
+		return errors.Join(writeErr, relockErr)
+	case writeErr != nil:
+		return writeErr
+	case relockErr != nil:
+		return relockErr
+	}
+	return nil
 }
