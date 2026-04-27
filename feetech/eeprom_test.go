@@ -420,3 +420,39 @@ func TestServo_SCS_LockUsesAddr48(t *testing.T) {
 		t.Errorf("packet 3 lock addr: got %02X want 30 (48)", mock.WriteData[16+5])
 	}
 }
+
+// TestServo_NoLockAddress_SkipsDance constructs a custom model with no lock
+// register and verifies EEPROM-marked writes go straight through without the dance.
+func TestServo_NoLockAddress_SkipsDance(t *testing.T) {
+	mock := &transports.MockTransport{
+		ReadData: ackPacket(1),
+	}
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	noLock := &Model{
+		Name:        "test_nolock",
+		Number:      9999,
+		Protocol:    ProtocolSTS,
+		Resolution:  4096,
+		MaxPosition: 4095,
+		BaudRates:   DefaultBaudRates,
+		LockAddress: 0, // explicit: no lock register
+	}
+	servo := NewServo(bus, 1, noLock)
+	// id is EEPROM=true on STS, but the model says no lock — should still be a single write.
+	if err := servo.WriteRegister(context.Background(), "id", []byte{5}); err != nil {
+		t.Fatalf("WriteRegister: %v", err)
+	}
+
+	// Single 8-byte packet, no lock writes.
+	if len(mock.WriteData) != 8 {
+		t.Fatalf("expected 8 bytes (1 packet only), got %d: %X", len(mock.WriteData), mock.WriteData)
+	}
+	if mock.WriteData[5] != RegID.Address {
+		t.Errorf("addr: got %02X want %02X", mock.WriteData[5], RegID.Address)
+	}
+}
