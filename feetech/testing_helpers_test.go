@@ -11,10 +11,9 @@ import (
 	"github.com/hipsterbrown/feetech-servo/transports"
 )
 
-// mustHex parses a whitespace-tolerant hex string into bytes. It calls t.Fatal on parse failure.
-// Used to keep manual-fixture tests readable: mustHex(t, "FF FF 01 02 01 FB").
-func mustHex(t *testing.T, s string) []byte {
-	t.Helper()
+// hexDecodeIgnoreSpaces decodes a hex string after stripping ASCII whitespace.
+// Used by both mustHex (testing.T) and mustHexF (testing.F).
+func hexDecodeIgnoreSpaces(s string) ([]byte, error) {
 	cleaned := strings.Map(func(r rune) rune {
 		switch r {
 		case ' ', '\t', '\n', '\r':
@@ -22,9 +21,26 @@ func mustHex(t *testing.T, s string) []byte {
 		}
 		return r
 	}, s)
-	out, err := hex.DecodeString(cleaned)
+	return hex.DecodeString(cleaned)
+}
+
+// mustHex parses a whitespace-tolerant hex string into bytes. It calls t.Fatal on parse failure.
+// Used to keep manual-fixture tests readable: mustHex(t, "FF FF 01 02 01 FB").
+func mustHex(t *testing.T, s string) []byte {
+	t.Helper()
+	out, err := hexDecodeIgnoreSpaces(s)
 	if err != nil {
 		t.Fatalf("mustHex(%q): %v", s, err)
+	}
+	return out
+}
+
+// mustHexF is the *testing.F counterpart of mustHex.
+func mustHexF(f *testing.F, s string) []byte {
+	f.Helper()
+	out, err := hexDecodeIgnoreSpaces(s)
+	if err != nil {
+		f.Fatalf("mustHexF(%q): %v", s, err)
 	}
 	return out
 }
