@@ -181,3 +181,67 @@ func TestServo_SetBaudRate_AutoUnlocks(t *testing.T) {
 		t.Errorf("packet 3 not baud write: addr=%02X val=%02X want 06 00", mock.WriteData[16+5], mock.WriteData[16+6])
 	}
 }
+
+// TestServo_SetPositionLimits_AutoUnlocks verifies that each of the two
+// register writes (min and max angle limits) is wrapped in its own dance.
+// Total: 2 dances × 3 packets = 6 packets.
+func TestServo_SetPositionLimits_AutoUnlocks(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: ackPacket(1)}, {Reply: ackPacket(1)}, {Reply: ackPacket(1)},
+			{Reply: ackPacket(1)}, {Reply: ackPacket(1)}, {Reply: ackPacket(1)},
+		},
+	}
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	if err := servo.SetPositionLimits(context.Background(), 100, 4000); err != nil {
+		t.Fatalf("SetPositionLimits: %v", err)
+	}
+
+	// 50 bytes total: unlock(8) + min(9) + relock(8) + unlock(8) + max(9) + relock(8).
+	if len(mock.WriteData) != 50 {
+		t.Fatalf("expected 50 bytes, got %d: %X", len(mock.WriteData), mock.WriteData)
+	}
+	// Sanity: first packet is unlock at addr 55, last packet is relock at addr 55.
+	if mock.WriteData[5] != 55 || mock.WriteData[6] != 0 {
+		t.Errorf("first packet not unlock at 55: addr=%02X val=%02X", mock.WriteData[5], mock.WriteData[6])
+	}
+	if mock.WriteData[len(mock.WriteData)-2] != 1 {
+		t.Errorf("last packet value not 1 (re-lock): %02X", mock.WriteData[len(mock.WriteData)-2])
+	}
+}
+
+// TestServo_SetOperatingMode_AutoUnlocks verifies the addr-33 write is dance-wrapped.
+func TestServo_SetOperatingMode_AutoUnlocks(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: ackPacket(1)}, {Reply: ackPacket(1)}, {Reply: ackPacket(1)},
+		},
+	}
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	if err := servo.SetOperatingMode(context.Background(), ModeVelocity); err != nil {
+		t.Fatalf("SetOperatingMode: %v", err)
+	}
+
+	// 24 bytes: unlock(8) + mode(8) + relock(8).
+	if len(mock.WriteData) != 24 {
+		t.Fatalf("expected 24 bytes, got %d: %X", len(mock.WriteData), mock.WriteData)
+	}
+	// Packet 2 is the mode write at addr 33.
+	if mock.WriteData[8+5] != RegOperatingMode.Address {
+		t.Errorf("mode addr: got %02X want %02X", mock.WriteData[8+5], RegOperatingMode.Address)
+	}
+}
