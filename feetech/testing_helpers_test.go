@@ -100,8 +100,8 @@ func loadHexFixture(t *testing.T, name string) []byte {
 
 func TestLoadHexFixture_AllManualFixtures(t *testing.T) {
 	fixtures := []struct {
-		name   string
-		minLen int
+		name    string
+		wantLen int
 	}{
 		{"manual_ping", 6},
 		{"manual_ping_response", 6},
@@ -117,8 +117,8 @@ func TestLoadHexFixture_AllManualFixtures(t *testing.T) {
 	for _, f := range fixtures {
 		t.Run(f.name, func(t *testing.T) {
 			got := loadHexFixture(t, f.name)
-			if len(got) != f.minLen {
-				t.Fatalf("fixture %s: got %d bytes, want %d", f.name, len(got), f.minLen)
+			if len(got) != f.wantLen {
+				t.Fatalf("fixture %s: got %d bytes, want %d", f.name, len(got), f.wantLen)
 			}
 		})
 	}
