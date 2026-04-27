@@ -38,10 +38,10 @@ func TestBus_ConcurrentReads(t *testing.T) {
 	wg.Add(goroutines)
 	ctx := context.Background()
 
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		go func() {
 			defer wg.Done()
-			for j := 0; j < iterations; j++ {
+			for range iterations {
 				// Errors are acceptable as long as nothing data-races. Mock will
 				// likely error on the second-stage model read, which is expected
 				// since we don't script multi-step replies here.
