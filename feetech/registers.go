@@ -85,6 +85,12 @@ type Model struct {
 	// BaudRates lists supported baud rates in index order.
 	// Index 0 = first baud rate option, etc.
 	BaudRates []int
+
+	// LockAddress is the EEPROM lock register address. Servo writes to an
+	// EEPROM-marked register on this model are wrapped in unlock (write 0)
+	// and re-lock (write 1) packets at this address. Zero means the model
+	// has no lock register and EEPROM writes proceed without an unlock dance.
+	LockAddress byte
 }
 
 // DefaultBaudRates for most Feetech servos.
@@ -108,6 +114,7 @@ var (
 		Resolution:  4096,
 		MaxPosition: 4095,
 		BaudRates:   DefaultBaudRates,
+		LockAddress: 55,
 	}
 
 	ModelSTS3250 = Model{
@@ -117,6 +124,7 @@ var (
 		Resolution:  4096,
 		MaxPosition: 4095,
 		BaudRates:   DefaultBaudRates,
+		LockAddress: 55,
 	}
 
 	ModelSCS0009 = Model{
@@ -127,6 +135,7 @@ var (
 		MaxPosition: 1023,
 		BaudRates:   DefaultBaudRates,
 		Registers:   scs0009Registers,
+		LockAddress: 48,
 	}
 
 	ModelSCS15 = Model{
@@ -137,6 +146,7 @@ var (
 		MaxPosition: 1023,
 		BaudRates:   DefaultBaudRates,
 		Registers:   scs0009Registers, // Same register layout
+		LockAddress: 48,
 	}
 )
 
