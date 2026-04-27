@@ -2,6 +2,7 @@ package feetech
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -243,6 +244,140 @@ func TestServo_SetOperatingMode_AutoUnlocks(t *testing.T) {
 	// Packet 2 is the mode write at addr 33.
 	if mock.WriteData[8+5] != RegOperatingMode.Address {
 		t.Errorf("mode addr: got %02X want %02X", mock.WriteData[8+5], RegOperatingMode.Address)
+	}
+}
+
+// errPacket returns a 6-byte status packet with the given error flag set.
+func errPacket(id byte, errFlag byte) []byte {
+	chk := ^(id + 0x02 + errFlag)
+	return []byte{0xFF, 0xFF, id, 0x02, errFlag, chk}
+}
+
+// TestServo_WriteEEPROM_RelocksOnWriteError verifies that when the target write
+// fails (servo returns a status error), the re-lock packet is still sent.
+func TestServo_WriteEEPROM_RelocksOnWriteError(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Send: nil, Reply: ackPacket(1)},                    // unlock OK
+			{Send: nil, Reply: errPacket(1, byte(ErrOverload))}, // write fails
+			{Send: nil, Reply: ackPacket(1)},                    // relock OK
+		},
+	}
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	werr := servo.WriteRegister(context.Background(), "id", []byte{5})
+	if werr == nil {
+		t.Fatal("expected error from write step")
+	}
+	if !errors.Is(werr, ErrOverload) {
+		t.Errorf("expected ErrOverload in chain, got %v", werr)
+	}
+
+	// Verify all three packets were sent (unlock, write attempt, re-lock).
+	if len(mock.WriteData) != 24 {
+		t.Errorf("expected 24 bytes (3 packets), got %d: %X", len(mock.WriteData), mock.WriteData)
+	}
+	// Packet 3 should still be the relock at addr 55 with value 1.
+	if mock.WriteData[16+5] != 55 || mock.WriteData[16+6] != 1 {
+		t.Errorf("relock packet missing or wrong: addr=%02X val=%02X", mock.WriteData[16+5], mock.WriteData[16+6])
+	}
+}
+
+// TestServo_WriteEEPROM_JoinedErrorOnRelockError verifies that when the relock
+// returns an error status, that error surfaces through the returned error.
+func TestServo_WriteEEPROM_JoinedErrorOnRelockError(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Send: nil, Reply: ackPacket(1)},                    // unlock OK
+			{Send: nil, Reply: ackPacket(1)},                    // write OK
+			{Send: nil, Reply: errPacket(1, byte(ErrOverheat))}, // relock fails
+		},
+	}
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	werr := servo.WriteRegister(context.Background(), "id", []byte{5})
+	if werr == nil {
+		t.Fatal("expected error from relock step")
+	}
+	if !errors.Is(werr, ErrOverheat) {
+		t.Errorf("expected ErrOverheat in chain, got %v", werr)
+	}
+}
+
+// TestServo_WriteEEPROM_BothFailJoined exercises the errors.Join branch where
+// BOTH the write and the re-lock fail.
+func TestServo_WriteEEPROM_BothFailJoined(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Send: nil, Reply: ackPacket(1)},                    // unlock OK
+			{Send: nil, Reply: errPacket(1, byte(ErrOverload))}, // write fails
+			{Send: nil, Reply: errPacket(1, byte(ErrOverheat))}, // relock fails
+		},
+	}
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	werr := servo.WriteRegister(context.Background(), "id", []byte{5})
+	if werr == nil {
+		t.Fatal("expected error")
+	}
+	// errors.Join walks both branches.
+	if !errors.Is(werr, ErrOverload) {
+		t.Errorf("expected ErrOverload (write error) in chain, got %v", werr)
+	}
+	if !errors.Is(werr, ErrOverheat) {
+		t.Errorf("expected ErrOverheat (relock error) in chain, got %v", werr)
+	}
+
+	// All three packets should still have been sent.
+	if len(mock.WriteData) != 24 {
+		t.Errorf("expected 24 bytes (3 packets), got %d", len(mock.WriteData))
+	}
+}
+
+// TestServo_WriteEEPROM_UnlockFailDoesNotWrite verifies that when the unlock
+// itself fails, no further packets are sent and the unlock error is returned.
+func TestServo_WriteEEPROM_UnlockFailDoesNotWrite(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Send: nil, Reply: errPacket(1, byte(ErrOverheat))}, // unlock fails
+		},
+	}
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	werr := servo.WriteRegister(context.Background(), "id", []byte{5})
+	if werr == nil {
+		t.Fatal("expected unlock error")
+	}
+	if !errors.Is(werr, ErrOverheat) {
+		t.Errorf("expected ErrOverheat in chain, got %v", werr)
+	}
+	// Only the unlock packet should have been written.
+	if len(mock.WriteData) != 8 {
+		t.Errorf("expected 8 bytes (1 unlock packet only), got %d: %X", len(mock.WriteData), mock.WriteData)
 	}
 }
 
