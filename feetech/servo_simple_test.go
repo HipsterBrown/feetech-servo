@@ -127,18 +127,36 @@ func TestServo_OperatingMode(t *testing.T) {
 }
 
 func TestServo_SetOperatingMode(t *testing.T) {
-	mock := &transports.MockTransport{ReadData: ackResponse()}
+	// Auto-unlock dance: unlock (addr 55, 0) → mode write (addr 33) → re-lock (addr 55, 1).
+	// Use Script (not bytes.Repeat in ReadData) because the bus reads up to 12 bytes
+	// per Read call, which silently drops trailing acks pre-loaded in ReadData.
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: ackResponse()},
+			{Reply: ackResponse()},
+			{Reply: ackResponse()},
+		},
+	}
 	bus := newTestBus(t, mock)
 	defer bus.Close()
 	servo := NewServo(bus, 1, nil)
 	if err := servo.SetOperatingMode(context.Background(), ModeVelocity); err != nil {
 		t.Fatalf("SetOperatingMode: %v", err)
 	}
-	if mock.WriteData[5] != RegOperatingMode.Address {
-		t.Errorf("wrong address: %02X", mock.WriteData[5])
+
+	// Three 8-byte write packets total.
+	if len(mock.WriteData) != 24 {
+		t.Fatalf("expected 24 bytes (3 packets × 8 bytes), got %d: %X", len(mock.WriteData), mock.WriteData)
 	}
-	if mock.WriteData[6] != byte(ModeVelocity) {
-		t.Errorf("wrong mode: %02X", mock.WriteData[6])
+	// Packet 2 (offset 8) is the mode write.
+	const p2Addr = 8 + 5
+	const p2Value = 8 + 6
+	if mock.WriteData[p2Addr] != RegOperatingMode.Address {
+		t.Errorf("wrong mode address: %02X", mock.WriteData[p2Addr])
+	}
+	if mock.WriteData[p2Value] != byte(ModeVelocity) {
+		t.Errorf("wrong mode: %02X", mock.WriteData[p2Value])
 	}
 }
 
@@ -171,17 +189,16 @@ func TestServo_PositionLimits(t *testing.T) {
 }
 
 func TestServo_SetPositionLimits(t *testing.T) {
-	// Two acks for two writes; deliver each separately via ReadFunc.
-	responses := [][]byte{ackResponse(), ackResponse()}
-	idx := 0
+	// Two register writes, each its own dance. Total: 6 packets.
+	// Order: unlock → write min → relock → unlock → write max → relock.
+	// Use Script: pre-loading multiple acks in ReadData breaks because the bus reads
+	// up to 12 bytes per Read call, silently dropping trailing acks.
 	mock := &transports.MockTransport{}
-	mock.ReadFunc = func(p []byte) (int, error) {
-		if idx >= len(responses) {
-			return 0, nil
-		}
-		n := copy(p, responses[idx])
-		idx++
-		return n, nil
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: ackResponse()}, {Reply: ackResponse()}, {Reply: ackResponse()},
+			{Reply: ackResponse()}, {Reply: ackResponse()}, {Reply: ackResponse()},
+		},
 	}
 	bus := newTestBus(t, mock)
 	defer bus.Close()
@@ -189,9 +206,21 @@ func TestServo_SetPositionLimits(t *testing.T) {
 	if err := servo.SetPositionLimits(context.Background(), 100, 4000); err != nil {
 		t.Fatalf("SetPositionLimits: %v", err)
 	}
-	// First write should target RegMinAngleLimit.
-	if mock.WriteData[5] != RegMinAngleLimit.Address {
-		t.Errorf("first write address: %02X", mock.WriteData[5])
+
+	// Min limit is a 2-byte write, so its packet is 9 bytes (vs 8 for 1-byte writes).
+	// Lock writes are 1-byte: 8 bytes each.
+	// Layout: unlock(8) | min(9) | relock(8) | unlock(8) | max(9) | relock(8) = 50 bytes.
+	if len(mock.WriteData) != 50 {
+		t.Fatalf("expected 50 bytes, got %d: %X", len(mock.WriteData), mock.WriteData)
+	}
+
+	// Packet 2 (offset 8) is the min-limit write at addr RegMinAngleLimit.Address.
+	if mock.WriteData[8+5] != RegMinAngleLimit.Address {
+		t.Errorf("first write address: %02X", mock.WriteData[8+5])
+	}
+	// Packet 5 (offset 8+9+8+8 = 33) is the max-limit write at addr RegMaxAngleLimit.Address.
+	if mock.WriteData[33+5] != RegMaxAngleLimit.Address {
+		t.Errorf("second write address: %02X", mock.WriteData[33+5])
 	}
 }
 
