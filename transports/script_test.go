@@ -66,3 +66,38 @@ func TestScript_RemainsCompatibleWithReadData(t *testing.T) {
 		t.Fatalf("ReadData path broken: n=%d err=%v buf=%X", n, err, buf)
 	}
 }
+
+func TestScript_WildcardSendAcceptsAnyBytes(t *testing.T) {
+	mock := &MockTransport{}
+	mock.Script = &Script{
+		Steps: []Step{{Send: nil, Reply: []byte{0xAB}}},
+	}
+	if _, err := mock.Write([]byte{0x01, 0x02, 0x03}); err != nil {
+		t.Fatalf("wildcard Send should accept any write, got: %v", err)
+	}
+	buf := make([]byte, 1)
+	n, _ := mock.Read(buf)
+	if n != 1 || buf[0] != 0xAB {
+		t.Fatalf("reply not queued after wildcard match: n=%d buf=%X", n, buf)
+	}
+}
+
+func TestScript_ReplyConsumedAcrossMultipleReads(t *testing.T) {
+	mock := &MockTransport{}
+	mock.Script = &Script{
+		Steps: []Step{{Send: nil, Reply: []byte{0x01, 0x02, 0x03, 0x04}}},
+	}
+	if _, err := mock.Write([]byte{0xFF}); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 2)
+	if n, _ := mock.Read(buf); n != 2 || buf[0] != 0x01 || buf[1] != 0x02 {
+		t.Fatalf("first read: n=%d buf=%X", n, buf)
+	}
+	if n, _ := mock.Read(buf); n != 2 || buf[0] != 0x03 || buf[1] != 0x04 {
+		t.Fatalf("second read: n=%d buf=%X", n, buf)
+	}
+	if n, _ := mock.Read(buf); n != 0 {
+		t.Fatalf("third read should drain to 0, got n=%d", n)
+	}
+}
