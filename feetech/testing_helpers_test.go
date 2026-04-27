@@ -3,6 +3,8 @@ package feetech
 import (
 	"bytes"
 	"encoding/hex"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -83,4 +85,41 @@ func TestExpectWrite(t *testing.T) {
 			t.Fatal("expected expectWrite to fail on mismatch")
 		}
 	})
+}
+
+// loadHexFixture reads testdata/<name>.hex and parses it via mustHex.
+func loadHexFixture(t *testing.T, name string) []byte {
+	t.Helper()
+	path := filepath.Join("testdata", name+".hex")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("loadHexFixture(%q): %v", name, err)
+	}
+	return mustHex(t, string(data))
+}
+
+func TestLoadHexFixture_AllManualFixtures(t *testing.T) {
+	fixtures := []struct {
+		name   string
+		minLen int
+	}{
+		{"manual_ping", 6},
+		{"manual_ping_response", 6},
+		{"manual_read_position", 8},
+		{"manual_read_position_response", 8},
+		{"manual_write_id", 8},
+		{"manual_write_pos_time_speed", 13},
+		{"manual_action", 6},
+		{"manual_sync_write_4_servos", 36},
+		{"manual_reset", 6},
+		{"sync_read_two_responses", 16},
+	}
+	for _, f := range fixtures {
+		t.Run(f.name, func(t *testing.T) {
+			got := loadHexFixture(t, f.name)
+			if len(got) != f.minLen {
+				t.Fatalf("fixture %s: got %d bytes, want %d", f.name, len(got), f.minLen)
+			}
+		})
+	}
 }
