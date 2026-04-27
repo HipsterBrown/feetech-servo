@@ -103,3 +103,81 @@ func TestServo_WriteRegister_NoUnlockForSRAM(t *testing.T) {
 		t.Errorf("addr: got %02X want %02X", mock.WriteData[5], RegGoalPosition.Address)
 	}
 }
+
+// TestServo_SetID_AutoUnlocks confirms SetID performs the dance after disabling torque.
+// Sequence: torque-disable (addr 40 = 0) → unlock (addr 55 = 0) → id-write (addr 5 = 7) → relock (addr 55 = 1).
+func TestServo_SetID_AutoUnlocks(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: ackPacket(1)}, {Reply: ackPacket(1)},
+			{Reply: ackPacket(1)}, {Reply: ackPacket(1)},
+		},
+	}
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	if err := servo.SetID(context.Background(), 7); err != nil {
+		t.Fatalf("SetID: %v", err)
+	}
+
+	// 4 × 8-byte packets = 32 bytes.
+	if len(mock.WriteData) != 32 {
+		t.Fatalf("expected 32 bytes (4 packets × 8 bytes), got %d: %X", len(mock.WriteData), mock.WriteData)
+	}
+	// Packet 1: torque-disable (addr 40, val 0).
+	if mock.WriteData[5] != RegTorqueEnable.Address || mock.WriteData[6] != 0 {
+		t.Errorf("packet 1: addr=%02X val=%02X want %02X 00", mock.WriteData[5], mock.WriteData[6], RegTorqueEnable.Address)
+	}
+	// Packet 2: unlock (addr 55, val 0).
+	if mock.WriteData[8+5] != 55 || mock.WriteData[8+6] != 0 {
+		t.Errorf("packet 2: addr=%02X val=%02X want 37 00", mock.WriteData[8+5], mock.WriteData[8+6])
+	}
+	// Packet 3: id write (addr 5, val 7).
+	if mock.WriteData[16+5] != RegID.Address || mock.WriteData[16+6] != 7 {
+		t.Errorf("packet 3: addr=%02X val=%02X want 05 07", mock.WriteData[16+5], mock.WriteData[16+6])
+	}
+	// Packet 4: re-lock (addr 55, val 1).
+	if mock.WriteData[24+5] != 55 || mock.WriteData[24+6] != 1 {
+		t.Errorf("packet 4: addr=%02X val=%02X want 37 01", mock.WriteData[24+5], mock.WriteData[24+6])
+	}
+}
+
+// TestServo_SetBaudRate_AutoUnlocks confirms SetBaudRate also performs the dance
+// after disabling torque.
+func TestServo_SetBaudRate_AutoUnlocks(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: ackPacket(1)}, {Reply: ackPacket(1)},
+			{Reply: ackPacket(1)}, {Reply: ackPacket(1)},
+		},
+	}
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	// 1000000 baud = index 0 in DefaultBaudRates.
+	if err := servo.SetBaudRate(context.Background(), 1000000); err != nil {
+		t.Fatalf("SetBaudRate: %v", err)
+	}
+
+	if len(mock.WriteData) != 32 {
+		t.Fatalf("expected 32 bytes, got %d", len(mock.WriteData))
+	}
+	// Packet 1: torque-disable.
+	if mock.WriteData[5] != RegTorqueEnable.Address || mock.WriteData[6] != 0 {
+		t.Errorf("packet 1 not torque-disable: addr=%02X val=%02X", mock.WriteData[5], mock.WriteData[6])
+	}
+	// Packet 3: baud-rate write (addr 6, val 0 = 1Mbps index).
+	if mock.WriteData[16+5] != RegBaudRate.Address || mock.WriteData[16+6] != 0 {
+		t.Errorf("packet 3 not baud write: addr=%02X val=%02X want 06 00", mock.WriteData[16+5], mock.WriteData[16+6])
+	}
+}
