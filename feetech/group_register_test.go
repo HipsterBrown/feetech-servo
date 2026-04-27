@@ -76,7 +76,7 @@ func TestServoGroup_EnableAll_WritesSyncWritePacket(t *testing.T) {
 	if mock.WriteData[2] != BroadcastID {
 		t.Errorf("not broadcast: %02X", mock.WriteData[2])
 	}
-	if mock.WriteData[4] != 0x83 {
+	if mock.WriteData[4] != InstSyncWrite {
 		t.Errorf("wrong instruction: %02X", mock.WriteData[4])
 	}
 	if mock.WriteData[5] != RegTorqueEnable.Address {
