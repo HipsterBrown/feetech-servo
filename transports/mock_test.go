@@ -1,6 +1,7 @@
 package transports
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"testing"
@@ -13,7 +14,7 @@ func TestMockTransport_Write_AppendsAndReturnsLen(t *testing.T) {
 	if err != nil || n != 2 {
 		t.Fatalf("unexpected write: n=%d err=%v", n, err)
 	}
-	if string(m.WriteData) != string([]byte{0x01, 0x02}) {
+	if !bytes.Equal(m.WriteData, []byte{0x01, 0x02}) {
 		t.Errorf("WriteData = %X", m.WriteData)
 	}
 	n2, _ := m.Write([]byte{0x03})
