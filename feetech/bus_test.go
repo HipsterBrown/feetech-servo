@@ -14,8 +14,8 @@ func TestBus_Ping(t *testing.T) {
 	mock := &transports.MockTransport{}
 	readIdx := 0
 	responses := [][]byte{
-		{0xFF, 0xFF, 0x01, 0x02, 0x00, 0xFC},             // Ping response
-		{0xFF, 0xFF, 0x01, 0x04, 0x00, 0x09, 0x03, 0xEE}, // Model number 777 (0x0309)
+		mustHex(t, "FF FF 01 02 00 FC"),       // Ping response
+		mustHex(t, "FF FF 01 04 00 09 03 EE"), // Model number 777 (0x0309)
 	}
 	mock.ReadFunc = func(p []byte) (int, error) {
 		if readIdx >= len(responses) {
@@ -58,7 +58,7 @@ func TestBus_Ping(t *testing.T) {
 func TestBus_ReadRegister(t *testing.T) {
 	// Mock response for reading 2 bytes
 	mock := &transports.MockTransport{
-		ReadData: []byte{0xFF, 0xFF, 0x01, 0x04, 0x00, 0x00, 0x08, 0xF2}, // Position 2048
+		ReadData: mustHex(t, "FF FF 01 04 00 00 08 F2"), // Position 2048
 	}
 
 	bus, _ := NewBus(BusConfig{
@@ -85,7 +85,7 @@ func TestBus_ReadRegister(t *testing.T) {
 
 func TestBus_WriteRegister(t *testing.T) {
 	mock := &transports.MockTransport{
-		ReadData: []byte{0xFF, 0xFF, 0x01, 0x02, 0x00, 0xFC}, // Ack response
+		ReadData: mustHex(t, "FF FF 01 02 00 FC"), // Ack response
 	}
 
 	bus, _ := NewBus(BusConfig{
@@ -142,10 +142,8 @@ func TestBus_SyncWrite(t *testing.T) {
 func TestBus_SyncRead(t *testing.T) {
 	// Mock two servo responses
 	mock := &transports.MockTransport{
-		ReadData: []byte{
-			0xFF, 0xFF, 0x01, 0x04, 0x00, 0x00, 0x08, 0xF2, // ID 1, position 2048
-			0xFF, 0xFF, 0x02, 0x04, 0x00, 0x00, 0x04, 0xF5, // ID 2, position 1024
-		},
+		// ID 1, position 2048; ID 2, position 1024
+		ReadData: mustHex(t, "FF FF 01 04 00 00 08 F2 FF FF 02 04 00 00 04 F5"),
 	}
 
 	bus, _ := NewBus(BusConfig{
@@ -246,7 +244,7 @@ func TestBus_ClosedOperations(t *testing.T) {
 
 func TestServo_Position(t *testing.T) {
 	mock := &transports.MockTransport{
-		ReadData: []byte{0xFF, 0xFF, 0x01, 0x04, 0x00, 0x00, 0x08, 0xF2},
+		ReadData: mustHex(t, "FF FF 01 04 00 00 08 F2"),
 	}
 
 	bus, _ := NewBus(BusConfig{
@@ -270,7 +268,7 @@ func TestServo_Position(t *testing.T) {
 
 func TestServo_SetPosition(t *testing.T) {
 	mock := &transports.MockTransport{
-		ReadData: []byte{0xFF, 0xFF, 0x01, 0x02, 0x00, 0xFC},
+		ReadData: mustHex(t, "FF FF 01 02 00 FC"),
 	}
 
 	bus, _ := NewBus(BusConfig{
@@ -297,7 +295,7 @@ func TestServo_SetPosition(t *testing.T) {
 
 func TestServo_TorqueEnable(t *testing.T) {
 	mock := &transports.MockTransport{
-		ReadData: []byte{0xFF, 0xFF, 0x01, 0x02, 0x00, 0xFC},
+		ReadData: mustHex(t, "FF FF 01 02 00 FC"),
 	}
 
 	bus, _ := NewBus(BusConfig{
