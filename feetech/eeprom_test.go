@@ -76,3 +76,30 @@ func TestServo_WriteRegister_AutoUnlocksEEPROM(t *testing.T) {
 		t.Errorf("packet 3 value: got %d want 1 (re-lock)", got)
 	}
 }
+
+// TestServo_WriteRegister_NoUnlockForSRAM verifies that a write to a non-EEPROM
+// register skips the lock dance entirely.
+func TestServo_WriteRegister_NoUnlockForSRAM(t *testing.T) {
+	mock := &transports.MockTransport{
+		ReadData: ackPacket(1),
+	}
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	// goal_position is at addr 42, EEPROM=false. Two-byte payload.
+	if err := servo.WriteRegister(context.Background(), "goal_position", []byte{0x00, 0x08}); err != nil {
+		t.Fatalf("WriteRegister: %v", err)
+	}
+
+	// Single 9-byte packet: FF FF 01 05 03 2A 00 08 chk.
+	if len(mock.WriteData) != 9 {
+		t.Fatalf("expected single 9-byte packet, got %d: %X", len(mock.WriteData), mock.WriteData)
+	}
+	if mock.WriteData[5] != RegGoalPosition.Address {
+		t.Errorf("addr: got %02X want %02X", mock.WriteData[5], RegGoalPosition.Address)
+	}
+}
