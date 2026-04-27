@@ -79,7 +79,7 @@ func TestManual_SyncWritePacket(t *testing.T) {
 		t.Errorf("sync write checksum invalid")
 	}
 	for id := byte(1); id <= 4; id++ {
-		block := append([]byte{id}, 0x00, 0x08, 0x00, 0x00, 0xE8, 0x03)
+		block := []byte{id, 0x00, 0x08, 0x00, 0x00, 0xE8, 0x03}
 		if !bytes.Contains(got[7:len(got)-1], block) {
 			t.Errorf("sync write missing block for servo %d", id)
 		}
