@@ -16,35 +16,35 @@ type Register struct {
 // Common register addresses shared across most Feetech servos.
 // These are for the STS series; SCS series may differ.
 var (
-	RegModelNumber              = Register{Address: 3, Size: 2, ReadOnly: true}
-	RegFirmwareVersion          = Register{Address: 0, Size: 1, ReadOnly: true}
-	RegID                       = Register{Address: 5, Size: 1}
-	RegBaudRate                 = Register{Address: 6, Size: 1}
-	RegResponseDelay            = Register{Address: 7, Size: 1}
-	RegMinAngleLimit            = Register{Address: 9, Size: 2}
-	RegMaxAngleLimit            = Register{Address: 11, Size: 2}
-	RegMaxTemp                  = Register{Address: 13, Size: 1}
-	RegMaxVoltage               = Register{Address: 14, Size: 1}
-	RegMinVoltage               = Register{Address: 15, Size: 1}
-	RegMaxTorque                = Register{Address: 16, Size: 2}
-	RegPhase                    = Register{Address: 18, Size: 1}
-	RegUnloadCondition          = Register{Address: 19, Size: 1}
-	RegLEDAlarm                 = Register{Address: 20, Size: 1}
-	RegPGain                    = Register{Address: 21, Size: 1}
-	RegDGain                    = Register{Address: 22, Size: 1}
-	RegIGain                    = Register{Address: 23, Size: 1}
-	RegMinStartupForce          = Register{Address: 24, Size: 2}
-	RegClockwiseDeadband        = Register{Address: 26, Size: 1}
-	RegCounterClockwiseDeadband = Register{Address: 27, Size: 1}
-	RegProtectionCurrent        = Register{Address: 28, Size: 2}
-	RegAngularResolution        = Register{Address: 30, Size: 1}
-	RegPositionOffset           = Register{Address: 31, Size: 2, SignBit: 11}
-	RegOperatingMode            = Register{Address: 33, Size: 1}
-	RegProtectionTorque         = Register{Address: 34, Size: 1}
-	RegProtectionTime           = Register{Address: 35, Size: 1}
-	RegOverloadTorque           = Register{Address: 36, Size: 1}
-	RegSpeedClosedLoop          = Register{Address: 37, Size: 1}
-	RegCurrentClosedLoop        = Register{Address: 38, Size: 1}
+	RegModelNumber              = Register{Address: 3, Size: 2, ReadOnly: true, EEPROM: true}
+	RegFirmwareVersion          = Register{Address: 0, Size: 1, ReadOnly: true, EEPROM: true}
+	RegID                       = Register{Address: 5, Size: 1, EEPROM: true}
+	RegBaudRate                 = Register{Address: 6, Size: 1, EEPROM: true}
+	RegResponseDelay            = Register{Address: 7, Size: 1, EEPROM: true}
+	RegMinAngleLimit            = Register{Address: 9, Size: 2, EEPROM: true}
+	RegMaxAngleLimit            = Register{Address: 11, Size: 2, EEPROM: true}
+	RegMaxTemp                  = Register{Address: 13, Size: 1, EEPROM: true}
+	RegMaxVoltage               = Register{Address: 14, Size: 1, EEPROM: true}
+	RegMinVoltage               = Register{Address: 15, Size: 1, EEPROM: true}
+	RegMaxTorque                = Register{Address: 16, Size: 2, EEPROM: true}
+	RegPhase                    = Register{Address: 18, Size: 1, EEPROM: true}
+	RegUnloadCondition          = Register{Address: 19, Size: 1, EEPROM: true}
+	RegLEDAlarm                 = Register{Address: 20, Size: 1, EEPROM: true}
+	RegPGain                    = Register{Address: 21, Size: 1, EEPROM: true}
+	RegDGain                    = Register{Address: 22, Size: 1, EEPROM: true}
+	RegIGain                    = Register{Address: 23, Size: 1, EEPROM: true}
+	RegMinStartupForce          = Register{Address: 24, Size: 2, EEPROM: true}
+	RegClockwiseDeadband        = Register{Address: 26, Size: 1, EEPROM: true}
+	RegCounterClockwiseDeadband = Register{Address: 27, Size: 1, EEPROM: true}
+	RegProtectionCurrent        = Register{Address: 28, Size: 2, EEPROM: true}
+	RegAngularResolution        = Register{Address: 30, Size: 1, EEPROM: true}
+	RegPositionOffset           = Register{Address: 31, Size: 2, SignBit: 11, EEPROM: true}
+	RegOperatingMode            = Register{Address: 33, Size: 1, EEPROM: true}
+	RegProtectionTorque         = Register{Address: 34, Size: 1, EEPROM: true}
+	RegProtectionTime           = Register{Address: 35, Size: 1, EEPROM: true}
+	RegOverloadTorque           = Register{Address: 36, Size: 1, EEPROM: true}
+	RegSpeedClosedLoop          = Register{Address: 37, Size: 1, EEPROM: true}
+	RegCurrentClosedLoop        = Register{Address: 38, Size: 1, EEPROM: true}
 
 	// RAM registers (volatile)
 	RegTorqueEnable = Register{Address: 40, Size: 1}
@@ -66,8 +66,8 @@ var (
 	RegMoving          = Register{Address: 66, Size: 1, ReadOnly: true}
 	RegPresentCurrent  = Register{Address: 69, Size: 2, ReadOnly: true}
 
-	// Factory
-	RegMaxAcceleration = Register{Address: 85, Size: 1}
+	// Factory (lives in EEPROM space per datasheet)
+	RegMaxAcceleration = Register{Address: 85, Size: 1, EEPROM: true}
 )
 
 // Model represents a servo model specification.
