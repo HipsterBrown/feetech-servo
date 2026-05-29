@@ -19,6 +19,7 @@ type Bus struct {
 	mu          sync.Mutex
 	lastCmdTime time.Time
 	minCmdGap   time.Duration
+	pingTimeout time.Duration
 	closed      bool
 }
 
@@ -43,6 +44,11 @@ type BusConfig struct {
 
 	// MinCommandGap is the minimum time between commands. Default is 1ms.
 	MinCommandGap time.Duration
+
+	// PingTimeout bounds how long Scan/Discover wait for each per-ID ping
+	// before treating that ID as absent. Default is 30ms. Keep it short so
+	// sweeping the full ID space stays fast on a mostly-empty bus.
+	PingTimeout time.Duration
 }
 
 // NewBus creates a new servo bus with the given configuration.
@@ -56,6 +62,9 @@ func NewBus(cfg BusConfig) (*Bus, error) {
 	}
 	if cfg.MinCommandGap == 0 {
 		cfg.MinCommandGap = time.Millisecond
+	}
+	if cfg.PingTimeout == 0 {
+		cfg.PingTimeout = 30 * time.Millisecond
 	}
 
 	// Get or create transport
@@ -80,6 +89,7 @@ func NewBus(cfg BusConfig) (*Bus, error) {
 		protocol:    NewProtocol(cfg.Protocol),
 		timeout:     cfg.Timeout,
 		minCmdGap:   cfg.MinCommandGap,
+		pingTimeout: cfg.PingTimeout,
 		lastCmdTime: time.Now(),
 	}, nil
 }
@@ -330,7 +340,7 @@ func (b *Bus) Scan(ctx context.Context, startID, endID int) ([]FoundServo, error
 		default:
 		}
 
-		modelNum, err := b.Ping(ctx, id)
+		modelNum, err := b.pingWithTimeout(ctx, id)
 		if err != nil {
 			continue // No response at this ID
 		}
@@ -350,12 +360,37 @@ func (b *Bus) Scan(ctx context.Context, startID, endID int) ([]FoundServo, error
 	return found, nil
 }
 
-// Discover searches for servos using broadcast ping.
-// This is faster than Scan but only works with Protocol 0 (STS series).
-// Returns all servos that respond to the broadcast ping.
+// pingWithTimeout pings id, bounding the wait to pingTimeout so absent IDs are
+// skipped quickly during a sweep.
+func (b *Bus) pingWithTimeout(ctx context.Context, id int) (int, error) {
+	if b.pingTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, b.pingTimeout)
+		defer cancel()
+	}
+	return b.Ping(ctx, id)
+}
+
+// Discover finds every servo on the bus by pinging each ID in turn. It works
+// for both STS and SCS protocols and reliably finds all servos (unlike a
+// broadcast ping, whose simultaneous responses collide on a multi-servo bus).
+// Each absent ID costs one PingTimeout; tune BusConfig.PingTimeout for the
+// speed/coverage trade-off. For an explicit fast-but-lossy single broadcast
+// ping, see BroadcastPing.
 func (b *Bus) Discover(ctx context.Context) ([]FoundServo, error) {
+	return b.Scan(ctx, 1, int(MaxServoID))
+}
+
+// BroadcastPing discovers servos with a single broadcast ping (0xFE), STS only.
+//
+// WARNING: the Feetech protocol manual forbids broadcast ping when more than one
+// servo shares the bus — every servo answers at once and the responses collide
+// on the half-duplex line, so this typically returns only one of several
+// servos. Prefer Discover (or Scan) for reliable discovery; use BroadcastPing
+// only when you know a single servo is attached and want the fastest probe.
+func (b *Bus) BroadcastPing(ctx context.Context) ([]FoundServo, error) {
 	if b.protocol.Version() != ProtocolSTS {
-		return nil, errors.New("broadcast discovery only supported in STS protocol")
+		return nil, errors.New("broadcast ping only supported in STS protocol")
 	}
 
 	b.mu.Lock()
@@ -365,20 +400,15 @@ func (b *Bus) Discover(ctx context.Context) ([]FoundServo, error) {
 		return nil, ErrBusClosed
 	}
 
-	// Send broadcast ping
 	packet := b.protocol.PingPacket(BroadcastID)
 	if err := b.sendPacketLocked(packet); err != nil {
-		return nil, &CommError{Op: "discover", Err: err}
+		return nil, &CommError{Op: "broadcast ping", Err: err}
 	}
-
-	// Wait for responses to arrive
-	// This timing is from the original Python SDK
-	time.Sleep(23 * time.Millisecond)
 
 	var found []FoundServo
 	deadline := time.Now().Add(b.timeout)
 
-	// Collect all responses
+	// Collect whatever responses make it back uncorrupted.
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
@@ -386,44 +416,30 @@ func (b *Bus) Discover(ctx context.Context) ([]FoundServo, error) {
 		default:
 		}
 
-		// Try to read a response (6 bytes for ping response)
 		data, err := b.readRawBytesLocked(ctx, 6)
 		if err != nil {
-			// No more responses available
-			break
+			break // No more responses available
 		}
 
 		pkt, _, err := b.protocol.Decode(data)
 		if err != nil {
-			// Invalid packet, continue trying
-			continue
+			continue // Invalid/collided packet
 		}
-
 		if pkt.Error.HasError() {
-			// Servo has an error, skip it
 			continue
 		}
 
 		servoID := int(pkt.ID)
-
-		// Read model number from this servo
 		modelData, err := b.readRegisterLocked(ctx, byte(servoID), RegModelNumber.Address, byte(RegModelNumber.Size))
 		if err != nil {
-			// Can't read model, skip this servo
 			continue
 		}
-
 		modelNum := int(b.protocol.DecodeWord(modelData))
 
-		f := FoundServo{
-			ID:          servoID,
-			ModelNumber: modelNum,
-		}
-
+		f := FoundServo{ID: servoID, ModelNumber: modelNum}
 		if model, ok := GetModelByNumber(modelNum); ok {
 			f.Model = model
 		}
-
 		found = append(found, f)
 	}
 
@@ -533,6 +549,11 @@ func (b *Bus) readRawBytesLocked(ctx context.Context, expectedLen int) ([]byte, 
 	buffer := make([]byte, expectedLen*2) // Extra space for safety
 	totalRead := 0
 	deadline := time.Now().Add(b.timeout)
+	// Honor a sooner context deadline so per-ping timeouts (Scan/Discover) bound
+	// each blocking read rather than waiting the full bus timeout per absent ID.
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
 
 	for totalRead < expectedLen {
 		select {
