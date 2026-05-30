@@ -23,7 +23,6 @@ Currently supports:
 - **STS3215**: 12-bit resolution servo (0-4095) - STS/Protocol 0
 - **STS3250**: Enhanced version of STS3215 - STS/Protocol 0
 - **SCS0009**: 10-bit resolution servo (0-1023) - SCS/Protocol 1
-- **SM8512BL**: 16-bit resolution servo (0-65535) - STS/Protocol 0
 
 Easy to extend for additional Feetech servo models.
 
@@ -697,7 +696,6 @@ The package supports multiple servo models with different capabilities:
 - **STS3215**: 12-bit resolution (0-4095), STS/Protocol 0, most common
 - **STS3250**: Enhanced version of STS3215, same register layout
 - **SCS0009**: 10-bit resolution (0-1023), SCS/Protocol 1, different register layout
-- **SM8512BL**: 16-bit resolution (0-65535), STS/Protocol 0, high precision
 
 ### Creating Servos with Specific Models
 
@@ -711,7 +709,6 @@ servo := feetech.NewServo(bus, 1, nil)
 // Method 2: Specify model explicitly
 servo = feetech.NewServo(bus, 1, &feetech.ModelSTS3215)
 servo = feetech.NewServo(bus, 2, &feetech.ModelSCS0009)
-servo = feetech.NewServo(bus, 3, &feetech.ModelSM8512BL)
 
 // Method 3: Auto-detect from hardware
 servo = feetech.NewServo(bus, 1, nil)
