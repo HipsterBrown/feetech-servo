@@ -3,7 +3,7 @@ package feetech
 // Register represents a servo control table register.
 type Register struct {
 	Address  byte
-	Size     int // 1 or 2 bytes
+	Size     byte // 1 or 2 bytes
 	ReadOnly bool
 	// SignBit indicates which bit is the sign bit for sign-magnitude encoding.
 	// 0 means no sign-magnitude encoding (standard two's complement or unsigned).
@@ -75,10 +75,10 @@ var (
 // Model represents a servo model specification.
 type Model struct {
 	Name        string
-	Number      int // Model number returned by ping
-	Protocol    int // ProtocolSTS or ProtocolSCS
-	Resolution  int // Position resolution in steps (e.g., 4096 for 12-bit)
-	MaxPosition int // Maximum position value
+	Number      int             // Model number returned by ping
+	Protocol    ProtocolVersion // ProtocolSTS or ProtocolSCS
+	Resolution  int             // Position resolution in steps (e.g., 4096 for 12-bit)
+	MaxPosition int             // Maximum position value
 
 	// Registers maps register names to their definitions.
 	// If nil, uses the default STS register map.
@@ -280,10 +280,13 @@ func getCommonRegister(name string) (Register, bool) {
 	return reg, ok
 }
 
+// OperatingMode selects the servo control mode.
+type OperatingMode int
+
 // Operating modes.
 const (
-	ModePosition = 0
-	ModeVelocity = 1 // Wheel mode
-	ModePWM      = 2
-	ModeStep     = 3
+	ModePosition OperatingMode = 0
+	ModeVelocity OperatingMode = 1 // Wheel mode
+	ModePWM      OperatingMode = 2
+	ModeStep     OperatingMode = 3
 )

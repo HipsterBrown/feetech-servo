@@ -7,10 +7,13 @@ import (
 	"fmt"
 )
 
+// ProtocolVersion selects the wire protocol / byte order.
+type ProtocolVersion int
+
 // Protocol version constants.
 const (
-	ProtocolSTS = iota // STS/SMS series: little-endian, TTL level
-	ProtocolSCS        // SCS series: big-endian, TTL level
+	ProtocolSTS ProtocolVersion = iota // STS/SMS series: little-endian, TTL level
+	ProtocolSCS                        // SCS series: big-endian, TTL level
 )
 
 // Instruction codes per the Feetech protocol specification.
@@ -96,12 +99,12 @@ type Packet struct {
 
 // Protocol handles packet encoding/decoding for a specific protocol version.
 type Protocol struct {
-	version   int
+	version   ProtocolVersion
 	byteOrder binary.ByteOrder
 }
 
 // NewProtocol creates a protocol handler for the specified version.
-func NewProtocol(version int) *Protocol {
+func NewProtocol(version ProtocolVersion) *Protocol {
 	p := &Protocol{version: version}
 	if version == ProtocolSCS {
 		p.byteOrder = binary.BigEndian
@@ -117,7 +120,7 @@ func (p *Protocol) ByteOrder() binary.ByteOrder {
 }
 
 // Version returns the protocol version.
-func (p *Protocol) Version() int {
+func (p *Protocol) Version() ProtocolVersion {
 	return p.version
 }
 

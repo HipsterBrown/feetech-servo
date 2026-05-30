@@ -66,7 +66,7 @@ func (s *Servo) DetectModel(ctx context.Context) error {
 
 // Position reads the current position.
 func (s *Servo) Position(ctx context.Context) (int, error) {
-	data, err := s.bus.ReadRegister(ctx, s.id, RegPresentPosition.Address, RegPresentPosition.Size)
+	data, err := s.bus.ReadRegister(ctx, s.id, RegPresentPosition.Address, int(RegPresentPosition.Size))
 	if err != nil {
 		return 0, err
 	}
@@ -124,7 +124,7 @@ func (s *Servo) SetPositionWithTime(ctx context.Context, position, timeMs int) e
 // Velocity reads the current velocity.
 // Returns a signed value; negative indicates reverse direction.
 func (s *Servo) Velocity(ctx context.Context) (int, error) {
-	data, err := s.bus.ReadRegister(ctx, s.id, RegPresentVelocity.Address, RegPresentVelocity.Size)
+	data, err := s.bus.ReadRegister(ctx, s.id, RegPresentVelocity.Address, int(RegPresentVelocity.Size))
 	if err != nil {
 		return 0, err
 	}
@@ -185,7 +185,7 @@ func (s *Servo) Moving(ctx context.Context) (bool, error) {
 // Load reads the current load.
 // Returns a signed value; negative indicates load in reverse direction.
 func (s *Servo) Load(ctx context.Context) (int, error) {
-	data, err := s.bus.ReadRegister(ctx, s.id, RegPresentLoad.Address, RegPresentLoad.Size)
+	data, err := s.bus.ReadRegister(ctx, s.id, RegPresentLoad.Address, int(RegPresentLoad.Size))
 	if err != nil {
 		return 0, err
 	}
@@ -215,17 +215,17 @@ func (s *Servo) Temperature(ctx context.Context) (int, error) {
 // Configuration
 
 // OperatingMode reads the current operating mode.
-func (s *Servo) OperatingMode(ctx context.Context) (int, error) {
+func (s *Servo) OperatingMode(ctx context.Context) (OperatingMode, error) {
 	data, err := s.bus.ReadRegister(ctx, s.id, RegOperatingMode.Address, 1)
 	if err != nil {
 		return 0, err
 	}
-	return int(data[0]), nil
+	return OperatingMode(data[0]), nil
 }
 
 // SetOperatingMode sets the operating mode.
 // Must disable torque first.
-func (s *Servo) SetOperatingMode(ctx context.Context, mode int) error {
+func (s *Servo) SetOperatingMode(ctx context.Context, mode OperatingMode) error {
 	return s.writeRegister(ctx, RegOperatingMode, []byte{byte(mode)})
 }
 
@@ -300,7 +300,7 @@ func (s *Servo) ReadRegister(ctx context.Context, name string) ([]byte, error) {
 	if !ok {
 		return nil, fmt.Errorf("unknown register: %s", name)
 	}
-	return s.bus.ReadRegister(ctx, s.id, reg.Address, reg.Size)
+	return s.bus.ReadRegister(ctx, s.id, reg.Address, int(reg.Size))
 }
 
 // WriteRegister writes to a named register.
@@ -312,7 +312,7 @@ func (s *Servo) WriteRegister(ctx context.Context, name string, data []byte) err
 	if reg.ReadOnly {
 		return fmt.Errorf("register %s is read-only", name)
 	}
-	if len(data) != reg.Size {
+	if len(data) != int(reg.Size) {
 		return fmt.Errorf("data size mismatch: expected %d bytes, got %d", reg.Size, len(data))
 	}
 	return s.writeRegister(ctx, reg, data)

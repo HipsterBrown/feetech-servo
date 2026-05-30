@@ -37,7 +37,7 @@ type BusConfig struct {
 	BaudRate int
 
 	// Protocol version: ProtocolSTS (default) or ProtocolSCS.
-	Protocol int
+	Protocol ProtocolVersion
 
 	// Timeout for communication operations. Default is 1 second.
 	Timeout time.Duration

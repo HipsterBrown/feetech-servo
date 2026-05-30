@@ -68,7 +68,7 @@ func (g *ServoGroup) ServoByID(id int) *Servo {
 // Positions reads positions from all servos using sync read.
 // Returns a map of servo ID to position value.
 func (g *ServoGroup) Positions(ctx context.Context) (PositionMap, error) {
-	data, err := g.bus.SyncRead(ctx, RegPresentPosition.Address, RegPresentPosition.Size, g.ids)
+	data, err := g.bus.SyncRead(ctx, RegPresentPosition.Address, int(RegPresentPosition.Size), g.ids)
 	if err != nil {
 		return nil, err
 	}
@@ -324,7 +324,7 @@ func (g *ServoGroup) ReadRegister(ctx context.Context, registerName string) (map
 			continue
 		}
 
-		key := addrSize{addr: reg.Address, size: reg.Size}
+		key := addrSize{addr: reg.Address, size: int(reg.Size)}
 		groups[key] = append(groups[key], servo.ID())
 	}
 
@@ -377,7 +377,7 @@ func (g *ServoGroup) WriteRegister(ctx context.Context, registerName string, dat
 			continue
 		}
 
-		key := addrSize{addr: reg.Address, size: reg.Size}
+		key := addrSize{addr: reg.Address, size: int(reg.Size)}
 		if groups[key] == nil {
 			groups[key] = make(map[int][]byte)
 		}
