@@ -119,6 +119,54 @@ func (s *Servo) SetPositionWithTime(ctx context.Context, position, timeMs int) e
 	return s.bus.WriteRegister(ctx, s.id, RegGoalPosition.Address, data)
 }
 
+// GoalRequest is a full position-move command: target position plus the motion
+// profile (speed, time, acceleration). Unlike SetPositionWithSpeed/Time it also
+// sets the acceleration register, matching the Python SDK's WritePosEx.
+//
+// Speed and Time are alternatives — set one and leave the other 0; the firmware
+// uses Time when non-zero, otherwise Speed. Acc of 0 means an unlimited ramp.
+type GoalRequest struct {
+	Position int // goal position (sign-magnitude on STS multi-turn)
+	Speed    int // goal speed in steps/s (unsigned); 0 = use Time / max
+	Time     int // move time in ms (unsigned); 0 = use Speed
+	Acc      int // acceleration, ~100 steps/s^2 per unit, 0-255; 0 = unlimited
+}
+
+// encodeGoal builds the 7-byte payload written from the acceleration register:
+// [acc, pos_lo, pos_hi, time_lo, time_hi, speed_lo, speed_hi].
+func encodeGoal(proto *Protocol, g GoalRequest) ([]byte, error) {
+	if g.Acc < 0 || g.Acc > 0xFF {
+		return nil, fmt.Errorf("acceleration %d out of range [0, 255]", g.Acc)
+	}
+	if g.Speed < 0 || g.Speed > 0xFFFF {
+		return nil, fmt.Errorf("speed %d out of range [0, 65535]", g.Speed)
+	}
+	if g.Time < 0 || g.Time > 0xFFFF {
+		return nil, fmt.Errorf("time %d out of range [0, 65535]", g.Time)
+	}
+	posBytes, err := encodePositionWord(proto, g.Position)
+	if err != nil {
+		return nil, err
+	}
+	data := make([]byte, 7)
+	data[0] = byte(g.Acc)
+	copy(data[1:3], posBytes)
+	copy(data[3:5], proto.EncodeWord(uint16(g.Time)))
+	copy(data[5:7], proto.EncodeWord(uint16(g.Speed)))
+	return data, nil
+}
+
+// SetGoal commands a position move with full motion-profile control
+// (acceleration, speed/time) in a single write starting at the acceleration
+// register. For basic moves prefer SetPosition / SetPositionWithSpeed.
+func (s *Servo) SetGoal(ctx context.Context, g GoalRequest) error {
+	data, err := encodeGoal(s.bus.Protocol(), g)
+	if err != nil {
+		return err
+	}
+	return s.bus.WriteRegister(ctx, s.id, RegAcceleration.Address, data)
+}
+
 // Velocity Control
 
 // Velocity reads the current velocity.

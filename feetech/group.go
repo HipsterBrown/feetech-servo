@@ -187,6 +187,30 @@ func (g *ServoGroup) SetPositionsWithTime(ctx context.Context, positions, times 
 	return g.bus.SyncWrite(ctx, RegGoalPosition.Address, 6, servoData)
 }
 
+// SetGoals commands full position-move profiles (position + speed/time +
+// acceleration) for multiple servos in a single sync write. Only servos present
+// in the goals map and in the group are written. See GoalRequest.
+func (g *ServoGroup) SetGoals(ctx context.Context, goals map[int]GoalRequest) error {
+	if len(goals) == 0 {
+		return nil // No-op for empty map
+	}
+
+	proto := g.bus.Protocol()
+	servoData := make(map[int][]byte, len(goals))
+	for id, req := range goals {
+		if g.ServoByID(id) == nil {
+			return fmt.Errorf("servo ID %d not in group", id)
+		}
+		data, err := encodeGoal(proto, req)
+		if err != nil {
+			return err
+		}
+		servoData[id] = data
+	}
+
+	return g.bus.SyncWrite(ctx, RegAcceleration.Address, 7, servoData)
+}
+
 // EnableAll enables torque on all servos.
 func (g *ServoGroup) EnableAll(ctx context.Context) error {
 	servoData := make(map[int][]byte, len(g.servos))
