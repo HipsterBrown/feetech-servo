@@ -49,14 +49,16 @@ var (
 	// RAM registers (volatile)
 	RegTorqueEnable = Register{Address: 40, Size: 1}
 	RegAcceleration = Register{Address: 41, Size: 1}
-	RegGoalPosition = Register{Address: 42, Size: 2}
+	// Goal/present position use sign-magnitude bit 15 on STS/SMS (multi-turn).
+	// SCS (10-bit) never sets bit 15, so its encoding is unaffected.
+	RegGoalPosition = Register{Address: 42, Size: 2, SignBit: 15}
 	RegGoalTime     = Register{Address: 44, Size: 2}
 	RegGoalVelocity = Register{Address: 46, Size: 2, SignBit: 15}
 	RegTorqueLimit  = Register{Address: 48, Size: 2}
 	RegLock         = Register{Address: 55, Size: 1}
 
 	// Feedback registers (read-only)
-	RegPresentPosition = Register{Address: 56, Size: 2, ReadOnly: true}
+	RegPresentPosition = Register{Address: 56, Size: 2, ReadOnly: true, SignBit: 15}
 	RegPresentVelocity = Register{Address: 58, Size: 2, ReadOnly: true, SignBit: 15}
 	RegPresentLoad     = Register{Address: 60, Size: 2, ReadOnly: true, SignBit: 9}
 	RegPresentVoltage  = Register{Address: 62, Size: 1, ReadOnly: true}

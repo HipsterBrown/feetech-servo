@@ -70,12 +70,16 @@ func (s *Servo) Position(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return int(s.bus.Protocol().DecodeWord(data)), nil
+	return decodePositionWord(s.bus.Protocol(), data), nil
 }
 
 // SetPosition commands the servo to move to the specified position.
+// Negative positions are encoded as sign-magnitude (STS multi-turn).
 func (s *Servo) SetPosition(ctx context.Context, position int) error {
-	data := s.bus.Protocol().EncodeWord(uint16(position))
+	data, err := encodePositionWord(s.bus.Protocol(), position)
+	if err != nil {
+		return err
+	}
 	return s.bus.WriteRegister(ctx, s.id, RegGoalPosition.Address, data)
 }
 
@@ -86,8 +90,12 @@ func (s *Servo) SetPositionWithSpeed(ctx context.Context, position, speed int) e
 
 	// Write position and velocity together (6 bytes starting at goal position)
 	// Format: position(2) + time(2) + velocity(2)
+	posBytes, err := encodePositionWord(proto, position)
+	if err != nil {
+		return err
+	}
 	data := make([]byte, 6)
-	copy(data[0:2], proto.EncodeWord(uint16(position)))
+	copy(data[0:2], posBytes)
 	copy(data[2:4], proto.EncodeWord(0)) // Time = 0 (use speed instead)
 	copy(data[4:6], proto.EncodeWord(uint16(speed)))
 
@@ -99,8 +107,12 @@ func (s *Servo) SetPositionWithSpeed(ctx context.Context, position, speed int) e
 func (s *Servo) SetPositionWithTime(ctx context.Context, position, timeMs int) error {
 	proto := s.bus.Protocol()
 
+	posBytes, err := encodePositionWord(proto, position)
+	if err != nil {
+		return err
+	}
 	data := make([]byte, 6)
-	copy(data[0:2], proto.EncodeWord(uint16(position)))
+	copy(data[0:2], posBytes)
 	copy(data[2:4], proto.EncodeWord(uint16(timeMs)))
 	copy(data[4:6], proto.EncodeWord(0)) // Speed = 0 (use time instead)
 
@@ -307,6 +319,25 @@ func (s *Servo) WriteRegister(ctx context.Context, name string, data []byte) err
 }
 
 // Sign-magnitude encoding helpers
+
+// maxEncodablePosition is the largest magnitude representable when bit 15 is the
+// sign bit (bits 0-14 hold the magnitude). Beyond this, a value would overflow
+// into the sign bit and silently flip sign.
+const maxEncodablePosition = 0x7FFF
+
+// encodePositionWord sign-magnitude-encodes a goal position into protocol bytes,
+// rejecting values that cannot be represented without overflowing the sign bit.
+func encodePositionWord(proto *Protocol, position int) ([]byte, error) {
+	if position < -maxEncodablePosition || position > maxEncodablePosition {
+		return nil, fmt.Errorf("position %d out of range [%d, %d]", position, -maxEncodablePosition, maxEncodablePosition)
+	}
+	return proto.EncodeWord(uint16(encodeSignMagnitude(position, RegGoalPosition.SignBit))), nil
+}
+
+// decodePositionWord sign-magnitude-decodes a present position from protocol bytes.
+func decodePositionWord(proto *Protocol, data []byte) int {
+	return decodeSignMagnitude(int(proto.DecodeWord(data)), RegPresentPosition.SignBit)
+}
 
 func decodeSignMagnitude(value, signBit int) int {
 	if signBit == 0 {

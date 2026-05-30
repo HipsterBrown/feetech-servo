@@ -76,7 +76,7 @@ func (g *ServoGroup) Positions(ctx context.Context) (PositionMap, error) {
 	proto := g.bus.Protocol()
 	positions := make(PositionMap, len(data))
 	for id, d := range data {
-		positions[id] = int(proto.DecodeWord(d))
+		positions[id] = decodePositionWord(proto, d)
 	}
 
 	return positions, nil
@@ -97,7 +97,11 @@ func (g *ServoGroup) SetPositions(ctx context.Context, positions PositionMap) er
 		if g.ServoByID(id) == nil {
 			return fmt.Errorf("servo ID %d not in group", id)
 		}
-		servoData[id] = proto.EncodeWord(uint16(pos))
+		b, err := encodePositionWord(proto, pos)
+		if err != nil {
+			return err
+		}
+		servoData[id] = b
 	}
 
 	return g.bus.SyncWrite(ctx, RegGoalPosition.Address, 2, servoData)
@@ -125,8 +129,12 @@ func (g *ServoGroup) SetPositionsWithSpeed(ctx context.Context, positions, speed
 			return fmt.Errorf("servo ID %d not in group", id)
 		}
 
+		posBytes, err := encodePositionWord(proto, pos)
+		if err != nil {
+			return err
+		}
 		data := make([]byte, 6)
-		copy(data[0:2], proto.EncodeWord(uint16(pos)))
+		copy(data[0:2], posBytes)
 		copy(data[2:4], proto.EncodeWord(0)) // Time = 0
 		copy(data[4:6], proto.EncodeWord(uint16(speed)))
 		servoData[id] = data
@@ -161,8 +169,12 @@ func (g *ServoGroup) SetPositionsWithTime(ctx context.Context, positions, times 
 			return fmt.Errorf("servo ID %d not in group", id)
 		}
 
+		posBytes, err := encodePositionWord(proto, pos)
+		if err != nil {
+			return err
+		}
 		data := make([]byte, 6)
-		copy(data[0:2], proto.EncodeWord(uint16(pos)))
+		copy(data[0:2], posBytes)
 		copy(data[2:4], proto.EncodeWord(uint16(timeMs)))
 		copy(data[4:6], proto.EncodeWord(0)) // Speed = 0
 		servoData[id] = data
@@ -212,7 +224,10 @@ func (g *ServoGroup) RegWritePositions(ctx context.Context, positions PositionMa
 			return fmt.Errorf("servo ID %d not in group", id)
 		}
 
-		data := proto.EncodeWord(uint16(pos))
+		data, err := encodePositionWord(proto, pos)
+		if err != nil {
+			return err
+		}
 		if err := g.bus.RegWrite(ctx, id, RegGoalPosition.Address, data); err != nil {
 			return fmt.Errorf("servo %d: %w", id, err)
 		}
