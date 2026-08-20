@@ -80,18 +80,11 @@ func (t *SerialTransport) SetReadTimeout(timeout time.Duration) error {
 }
 
 func (t *SerialTransport) Flush() error {
-	// Read and discard any buffered data
-	buf := make([]byte, 4096)
-	t.port.SetReadTimeout(10 * time.Millisecond)
-	for {
-		n, err := t.port.Read(buf)
-		if n == 0 || err != nil {
-			break
-		}
-	}
-	// Restore original timeout
-	t.port.SetReadTimeout(t.timeout)
-	return nil
+	// go.bug.st/serial's unixPort.Read blocks in Select until the read
+	// deadline expires before returning (0, nil), so draining via Read
+	// cost a full read-timeout on every call. ResetInputBuffer issues a
+	// tcflush(TCIFLUSH) ioctl and returns immediately.
+	return t.port.ResetInputBuffer()
 }
 
 // PortName returns the serial port name.
