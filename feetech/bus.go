@@ -278,16 +278,18 @@ func (b *Bus) SyncRead(ctx context.Context, address byte, dataLen int, ids []int
 	// Build result map. A request-rejection flag on any single servo discards
 	// the whole response (its payload is meaningless and packet framing past
 	// it can't be trusted either). A condition flag still means the servo
-	// answered, so its payload is kept and the flag is accumulated to report
-	// alongside the rest of the results below.
+	// answered, so its payload is kept and the flag is recorded per-servo to
+	// report alongside the rest of the results below.
 	result := make(map[int][]byte, len(packets))
-	var flags StatusError
+	perServoFlags := make(map[int]StatusError)
 	for _, pkt := range packets {
 		if payloadValid, _ := splitStatus(pkt.Error); !payloadValid {
 			return nil, &ServoError{ID: int(pkt.ID), Op: "sync_read", Status: pkt.Error}
 		}
 		result[int(pkt.ID)] = pkt.Parameters
-		flags |= pkt.Error
+		if pkt.Error != 0 {
+			perServoFlags[int(pkt.ID)] = pkt.Error
+		}
 	}
 
 	// Check for missing responses
@@ -297,14 +299,12 @@ func (b *Bus) SyncRead(ctx context.Context, address byte, dataLen int, ids []int
 		}
 	}
 
-	// Condition flags came from one or more servos in the group; a single
-	// ServoError.ID can't honestly name "which one". Use BroadcastID, the
-	// protocol's own sentinel for "this addresses every ID in the group"
-	// (already used as the packet ID for sync read/write requests), rather
-	// than inventing a new meaning. ConditionStatus only reads Status, so
-	// callers checking the flags are unaffected either way.
-	if flags != 0 {
-		return result, &ServoError{ID: BroadcastID, Op: "sync_read", Status: flags}
+	// Condition flags came from one or more servos in the group; SyncReadError
+	// keeps the per-servo attribution instead of collapsing it into a single
+	// anonymous ID. ConditionStatus still resolves to the OR of the flags via
+	// SyncReadError.As, so callers checking flags are unaffected either way.
+	if len(perServoFlags) > 0 {
+		return result, &SyncReadError{Op: "sync_read", Status: perServoFlags}
 	}
 
 	return result, nil

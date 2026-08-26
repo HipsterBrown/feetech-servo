@@ -90,11 +90,10 @@ func splitStatus(s StatusError) (payloadValid bool, err error) {
 	return true, s
 }
 
-func (e StatusError) Error() string {
-	if e == 0 {
-		return "no error"
-	}
-
+// flagNames returns the set flag names in a fixed order, e.g. ["overheat",
+// "overload"]. Shared by Error() and SyncReadError's per-servo rendering so
+// the two never drift apart.
+func (e StatusError) flagNames() []string {
 	var msgs []string
 	if e&ErrVoltage != 0 {
 		msgs = append(msgs, "voltage")
@@ -117,8 +116,14 @@ func (e StatusError) Error() string {
 	if e&ErrInstruction != 0 {
 		msgs = append(msgs, "instruction")
 	}
+	return msgs
+}
 
-	return fmt.Sprintf("servo status error: %v", msgs)
+func (e StatusError) Error() string {
+	if e == 0 {
+		return "no error"
+	}
+	return fmt.Sprintf("servo status error: %v", e.flagNames())
 }
 
 // HasError returns true if any error flag is set.

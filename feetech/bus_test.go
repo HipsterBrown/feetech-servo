@@ -3,6 +3,7 @@ package feetech
 import (
 	"bytes"
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -257,6 +258,65 @@ func TestBus_SyncRead_RequestFlagDiscardsResponse(t *testing.T) {
 	}
 	if _, ok := ConditionStatus(err); ok {
 		t.Errorf("ConditionStatus ok = true, want false for request-rejection flag")
+	}
+}
+
+// TestBus_SyncRead_PerServoAttribution verifies that when several servos in
+// a sync read answer with condition flags, SyncRead reports which servo said
+// what — not just the OR of every flag with no way to tell which joint is
+// unhappy.
+func TestBus_SyncRead_PerServoAttribution(t *testing.T) {
+	mock := &transports.MockTransport{
+		ReadData: append(append(
+			readReplyPacket(1, byte(ErrOverheat), 0x00, 0x08), // servo 1: overheat
+			readReplyPacket(2, 0x00, 0x00, 0x04)...),          // servo 2: clean
+			readReplyPacket(3, byte(ErrOverload), 0x00, 0x02)...), // servo 3: overload
+	}
+	bus, _ := NewBus(BusConfig{
+		Transport: mock,
+		Protocol:  ProtocolSTS,
+		Timeout:   100 * time.Millisecond,
+	})
+	defer bus.Close()
+
+	data, err := bus.SyncRead(context.Background(), RegPresentPosition.Address, 2, []int{1, 2, 3})
+	if len(data) != 3 {
+		t.Fatalf("got %d results, want 3 (data: %v, err: %v)", len(data), data, err)
+	}
+
+	var syncErr *SyncReadError
+	if !errors.As(err, &syncErr) {
+		t.Fatalf("errors.As(err, &SyncReadError) = false for err %v", err)
+	}
+	if len(syncErr.Status) != 2 {
+		t.Fatalf("Status has %d entries, want 2: %v", len(syncErr.Status), syncErr.Status)
+	}
+	if syncErr.Status[1] != ErrOverheat {
+		t.Errorf("servo 1 flags: got %v, want ErrOverheat", syncErr.Status[1])
+	}
+	if syncErr.Status[3] != ErrOverload {
+		t.Errorf("servo 3 flags: got %v, want ErrOverload", syncErr.Status[3])
+	}
+	if _, ok := syncErr.Status[2]; ok {
+		t.Errorf("servo 2 was clean, should not appear in Status")
+	}
+
+	// ConditionStatus must still resolve to the combined flags.
+	flags, ok := ConditionStatus(err)
+	if !ok {
+		t.Fatalf("ConditionStatus ok = false, want true for err %v", err)
+	}
+	if want := ErrOverheat | ErrOverload; flags != want {
+		t.Errorf("combined flags: got %v, want %v", flags, want)
+	}
+
+	// Error() must be deterministic across repeated calls: map iteration
+	// order is random, the rendered message must not be.
+	want := "sync_read: servo 1 [overheat], servo 3 [overload]"
+	for i := 0; i < 20; i++ {
+		if got := err.Error(); got != want {
+			t.Fatalf("Error() = %q, want %q (iteration %d)", got, want, i)
+		}
 	}
 }
 

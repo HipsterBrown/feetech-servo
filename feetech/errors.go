@@ -3,6 +3,8 @@ package feetech
 import (
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 )
 
 // Sentinel errors for common failure modes.
@@ -48,6 +50,47 @@ func (e *ServoError) Error() string {
 
 func (e *ServoError) Unwrap() error {
 	return e.Err
+}
+
+// SyncReadError reports condition flags observed from a SyncRead across a
+// group of servos, keyed by servo ID. Unlike ServoError.ID — which names a
+// single servo — a sync read can have several servos answer with a flag at
+// once, and this preserves which one said what instead of collapsing them
+// into one anonymous report.
+type SyncReadError struct {
+	Op     string
+	Status map[int]StatusError // servo ID -> condition flags reported by that servo
+}
+
+func (e *SyncReadError) Error() string {
+	ids := make([]int, 0, len(e.Status))
+	for id := range e.Status {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids) // map order is random; the message must not be
+
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		parts[i] = fmt.Sprintf("servo %d %v", id, e.Status[id].flagNames())
+	}
+	return fmt.Sprintf("%s: %s", e.Op, strings.Join(parts, ", "))
+}
+
+// As implements the errors.As matching hook (see the errors.As docs) so that
+// ConditionStatus(err) keeps working unchanged: errors.As(err, &someStatusError)
+// resolves to the OR of every per-servo flag, exactly as if a single servo
+// had reported the combination.
+func (e *SyncReadError) As(target any) bool {
+	status, ok := target.(*StatusError)
+	if !ok {
+		return false
+	}
+	var combined StatusError
+	for _, s := range e.Status {
+		combined |= s
+	}
+	*status = combined
+	return true
 }
 
 // IsTimeout returns true if the error is a timeout error.
