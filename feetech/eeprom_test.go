@@ -3,6 +3,7 @@ package feetech
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -180,6 +181,160 @@ func TestServo_SetBaudRate_AutoUnlocks(t *testing.T) {
 	// Packet 3: baud-rate write (addr 6, val 0 = 1Mbps index).
 	if mock.WriteData[16+5] != RegBaudRate.Address || mock.WriteData[16+6] != 0 {
 		t.Errorf("packet 3 not baud write: addr=%02X val=%02X want 06 00", mock.WriteData[16+5], mock.WriteData[16+6])
+	}
+}
+
+// TestServo_SetID_ConditionFlagOnTorqueDisable_Proceeds verifies that Task 1's
+// write-tolerant contract flows through SetID's safety step for free:
+// SetTorqueEnabled writes RegTorqueEnable (SRAM, non-EEPROM), which routes
+// through Bus.WriteRegister -> writeRegisterLocked and now returns nil on a
+// condition flag. A flagged torque-disable ack must not abort SetID -- the
+// dance proceeds through unlock, ID write, and re-lock, and the servo's ID
+// is updated.
+func TestServo_SetID_ConditionFlagOnTorqueDisable_Proceeds(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: errPacket(1, byte(ErrOverload))}, // torque-disable, condition flag only
+			{Reply: ackPacket(1)},                    // unlock
+			{Reply: ackPacket(1)},                    // id write
+			{Reply: ackPacket(1)},                    // relock
+		},
+	}
+	bus := newTestBus(t, mock)
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	if err := servo.SetID(context.Background(), 7); err != nil {
+		t.Fatalf("SetID: condition flag on torque-disable must not abort: %v", err)
+	}
+	if servo.ID() != 7 {
+		t.Errorf("servo.ID() = %d, want 7", servo.ID())
+	}
+
+	// The full 4-packet sequence must have been sent: torque-disable, unlock,
+	// id-write, relock.
+	if len(mock.WriteData) != 32 {
+		t.Fatalf("expected 32 bytes (4 packets), got %d: %X", len(mock.WriteData), mock.WriteData)
+	}
+	if mock.WriteData[5] != RegTorqueEnable.Address || mock.WriteData[6] != 0 {
+		t.Errorf("packet 1 not torque-disable: addr=%02X val=%02X", mock.WriteData[5], mock.WriteData[6])
+	}
+	if mock.WriteData[8+5] != 55 || mock.WriteData[8+6] != 0 {
+		t.Errorf("packet 2 not unlock: addr=%02X val=%02X", mock.WriteData[8+5], mock.WriteData[8+6])
+	}
+	if mock.WriteData[16+5] != RegID.Address || mock.WriteData[16+6] != 7 {
+		t.Errorf("packet 3 not id write: addr=%02X val=%02X", mock.WriteData[16+5], mock.WriteData[16+6])
+	}
+	if mock.WriteData[24+5] != 55 || mock.WriteData[24+6] != 1 {
+		t.Errorf("packet 4 not relock: addr=%02X val=%02X", mock.WriteData[24+5], mock.WriteData[24+6])
+	}
+}
+
+// TestServo_SetID_RejectionOnTorqueDisable_Aborts pins the half of the
+// contract that must keep working: a rejection flag (checksum/instruction/
+// range, not a condition flag) on the torque-disable ack means the servo
+// genuinely did not accept the instruction, so SetID must still abort with
+// "failed to disable torque" and never transmit the unlock or ID-write
+// packets.
+func TestServo_SetID_RejectionOnTorqueDisable_Aborts(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: errPacket(1, byte(ErrChecksum))}, // torque-disable, rejected
+		},
+	}
+	bus := newTestBus(t, mock)
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	err := servo.SetID(context.Background(), 7)
+	if err == nil {
+		t.Fatal("expected SetID to abort on a rejected torque-disable")
+	}
+	if !strings.Contains(err.Error(), "failed to disable torque") {
+		t.Errorf("error = %v, want it to mention %q", err, "failed to disable torque")
+	}
+	if !errors.Is(err, ErrChecksum) {
+		t.Errorf("expected ErrChecksum in error chain, got: %v", err)
+	}
+	if servo.ID() != 1 {
+		t.Errorf("servo.ID() = %d, want unchanged 1", servo.ID())
+	}
+
+	// Only the torque-disable packet should have been sent -- unlock and the
+	// ID write must never be transmitted.
+	if len(mock.WriteData) != 8 {
+		t.Fatalf("expected 8 bytes (torque-disable only, aborted), got %d: %X", len(mock.WriteData), mock.WriteData)
+	}
+}
+
+// TestServo_SetBaudRate_ConditionFlagOnTorqueDisable_Proceeds mirrors
+// TestServo_SetID_ConditionFlagOnTorqueDisable_Proceeds for SetBaudRate.
+func TestServo_SetBaudRate_ConditionFlagOnTorqueDisable_Proceeds(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: errPacket(1, byte(ErrOverload))}, // torque-disable, condition flag only
+			{Reply: ackPacket(1)},                    // unlock
+			{Reply: ackPacket(1)},                    // baud-rate write
+			{Reply: ackPacket(1)},                    // relock
+		},
+	}
+	bus := newTestBus(t, mock)
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	// 1000000 baud = index 0 in DefaultBaudRates.
+	if err := servo.SetBaudRate(context.Background(), 1000000); err != nil {
+		t.Fatalf("SetBaudRate: condition flag on torque-disable must not abort: %v", err)
+	}
+
+	if len(mock.WriteData) != 32 {
+		t.Fatalf("expected 32 bytes (4 packets), got %d: %X", len(mock.WriteData), mock.WriteData)
+	}
+	if mock.WriteData[5] != RegTorqueEnable.Address || mock.WriteData[6] != 0 {
+		t.Errorf("packet 1 not torque-disable: addr=%02X val=%02X", mock.WriteData[5], mock.WriteData[6])
+	}
+	if mock.WriteData[8+5] != 55 || mock.WriteData[8+6] != 0 {
+		t.Errorf("packet 2 not unlock: addr=%02X val=%02X", mock.WriteData[8+5], mock.WriteData[8+6])
+	}
+	if mock.WriteData[16+5] != RegBaudRate.Address || mock.WriteData[16+6] != 0 {
+		t.Errorf("packet 3 not baud write: addr=%02X val=%02X", mock.WriteData[16+5], mock.WriteData[16+6])
+	}
+	if mock.WriteData[24+5] != 55 || mock.WriteData[24+6] != 1 {
+		t.Errorf("packet 4 not relock: addr=%02X val=%02X", mock.WriteData[24+5], mock.WriteData[24+6])
+	}
+}
+
+// TestServo_SetBaudRate_RejectionOnTorqueDisable_Aborts mirrors
+// TestServo_SetID_RejectionOnTorqueDisable_Aborts for SetBaudRate.
+func TestServo_SetBaudRate_RejectionOnTorqueDisable_Aborts(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: errPacket(1, byte(ErrChecksum))}, // torque-disable, rejected
+		},
+	}
+	bus := newTestBus(t, mock)
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	err := servo.SetBaudRate(context.Background(), 1000000)
+	if err == nil {
+		t.Fatal("expected SetBaudRate to abort on a rejected torque-disable")
+	}
+	if !strings.Contains(err.Error(), "failed to disable torque") {
+		t.Errorf("error = %v, want it to mention %q", err, "failed to disable torque")
+	}
+	if !errors.Is(err, ErrChecksum) {
+		t.Errorf("expected ErrChecksum in error chain, got: %v", err)
+	}
+
+	// Only the torque-disable packet should have been sent -- unlock and the
+	// baud-rate write must never be transmitted.
+	if len(mock.WriteData) != 8 {
+		t.Fatalf("expected 8 bytes (torque-disable only, aborted), got %d: %X", len(mock.WriteData), mock.WriteData)
 	}
 }
 
