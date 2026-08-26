@@ -147,7 +147,7 @@ func (b *Bus) Ping(ctx context.Context, id int) (int, error) {
 
 	// Now read model number
 	modelData, err := b.readRegisterLocked(ctx, byte(id), RegModelNumber.Address, byte(RegModelNumber.Size))
-	if modelData == nil {
+	if len(modelData) == 0 {
 		if err == nil {
 			err = ErrInvalidPacket
 		}
@@ -473,9 +473,12 @@ type FoundServo struct {
 	ModelNumber int
 	Model       *Model // May be nil if model is unknown
 	// Status carries any condition flags the servo reported during discovery
-	// (overload, overheat, voltage, angle limit). Zero means a clean ping. A
-	// flagged servo is still reported — it is present on the bus and its model
-	// number is valid; the flag says the motor needs attention.
+	// (overload, overheat, voltage, angle limit). Populated by Scan/Discover: a
+	// flagged servo is still reported there — it is present on the bus and its
+	// model number is valid; the flag says the motor needs attention. Zero means
+	// a clean ping there. BroadcastPing never sets this field — it drops any
+	// servo that reports a flag rather than reporting it with a Status, so a
+	// zero value from BroadcastPing means "not populated," not "clean."
 	Status StatusError
 }
 
