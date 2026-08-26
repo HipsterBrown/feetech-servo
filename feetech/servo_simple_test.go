@@ -370,3 +370,66 @@ func TestServoGroup_DisableAll(t *testing.T) {
 		t.Errorf("address: %02X", mock.WriteData[5])
 	}
 }
+
+// TestServo_Accessors_ReturnValueWithConditionFlag asserts every read accessor
+// hands back its decoded value even when the servo reports a condition flag.
+func TestServo_Accessors_ReturnValueWithConditionFlag(t *testing.T) {
+	ovl := byte(ErrOverload)
+
+	tests := []struct {
+		name  string
+		reply []byte
+		read  func(*Servo) (int, error)
+		want  int
+	}{
+		{
+			// Hardware capture: position 2221 while overloaded.
+			name:  "Position",
+			reply: readReplyPacket(6, ovl, 0xAD, 0x08),
+			read:  func(s *Servo) (int, error) { return s.Position(context.Background()) },
+			want:  2221,
+		},
+		{
+			// Hardware capture: load 200 (post-trip protection torque).
+			name:  "Load",
+			reply: readReplyPacket(6, ovl, 0xC8, 0x00),
+			read:  func(s *Servo) (int, error) { return s.Load(context.Background()) },
+			want:  200,
+		},
+		{
+			name:  "Temperature",
+			reply: readReplyPacket(6, ovl, 39),
+			read:  func(s *Servo) (int, error) { return s.Temperature(context.Background()) },
+			want:  39,
+		},
+		{
+			name:  "Voltage",
+			reply: readReplyPacket(6, ovl, 74),
+			read:  func(s *Servo) (int, error) { return s.Voltage(context.Background()) },
+			want:  74,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &transports.MockTransport{}
+			mock.Script = &transports.Script{Steps: []transports.Step{{Reply: tt.reply}}}
+
+			bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+			if err != nil {
+				t.Fatalf("NewBus: %v", err)
+			}
+			defer bus.Close()
+
+			got, err := tt.read(NewServo(bus, 6, nil))
+
+			if got != tt.want {
+				t.Errorf("value: got %d, want %d", got, tt.want)
+			}
+			flags, ok := ConditionStatus(err)
+			if !ok || flags != ErrOverload {
+				t.Errorf("ConditionStatus: got (%v, %v), want (ErrOverload, true)", flags, ok)
+			}
+		})
+	}
+}
