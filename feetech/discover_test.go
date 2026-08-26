@@ -182,6 +182,43 @@ func TestScan_IncludesOverloadedServo(t *testing.T) {
 	}
 }
 
+// TestScan_MergesConditionFlagsFromBothReads guards commit 81ca6e3's flag
+// merge in Bus.Ping (`pingFlags | modelFlags`, bus.go). It sets DIFFERENT
+// condition flags on the ping reply and the model-number read, so the
+// assertion can only pass if both sources are OR'd together — a mutation to
+// either operand alone (pingFlags or modelFlags by itself) leaves one flag
+// missing and fails this test, unlike TestScan_IncludesOverloadedServo which
+// sets the same flag on both replies and can't distinguish the source.
+func TestScan_MergesConditionFlagsFromBothReads(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			// ID 1: ping answers with ErrOverload...
+			{Reply: errPacket(1, byte(ErrOverload))},
+			// ...but the follow-up model-number read carries a DIFFERENT flag.
+			{Reply: readReplyPacket(1, byte(ErrOverheat), 0x09, 0x03)},
+		},
+	}
+
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	found, err := bus.Scan(context.Background(), 1, 1)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(found) != 1 {
+		t.Fatalf("expected 1 servo, got %d", len(found))
+	}
+	want := ErrOverload | ErrOverheat
+	if found[0].Status != want {
+		t.Errorf("Status: got %v, want %v (OR of ping and model-read flags)", found[0].Status, want)
+	}
+}
+
 // TestScan_SkipsRequestRejectionFlag guards against a plausible future
 // "simplification" of the Scan filter (e.g. only checking IsNoResponse):
 // a request-rejection flag (range/checksum/instruction) on the ping itself
