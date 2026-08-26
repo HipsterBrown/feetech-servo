@@ -371,7 +371,7 @@ func (g *ServoGroup) ReadRegister(ctx context.Context, registerName string) (map
 			if len(data) == 0 {
 				return nil, wrapped
 			}
-			// ponytail: currently unreachable — only SCS models populate
+			// NOTE: currently unreachable — only SCS models populate
 			// Model.Registers, and SyncRead rejects SCS outright, so an STS
 			// group always exits above via "no servos in group have
 			// register". Kept so a nil map can't be paired with a condition

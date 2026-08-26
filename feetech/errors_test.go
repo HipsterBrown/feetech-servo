@@ -181,3 +181,33 @@ func TestConditionStatus(t *testing.T) {
 		})
 	}
 }
+
+// TestSyncReadError_EmptyStatus covers the degenerate shapes SyncRead itself
+// never constructs (it guards on len(perServoFlags) > 0), so that a caller
+// building one by hand, or a future regression in that guard, cannot produce a
+// bogus "matched, no flags" result.
+func TestSyncReadError_EmptyStatus(t *testing.T) {
+	empty := &SyncReadError{Op: "sync_read"}
+
+	// The As hook must decline rather than report a zero StatusError as a match:
+	// a caller using errors.As directly would read a true return as success.
+	var status StatusError
+	if errors.As(error(empty), &status) {
+		t.Errorf("errors.As matched an empty SyncReadError, got status %v", status)
+	}
+	if flags, ok := ConditionStatus(empty); ok {
+		t.Errorf("ConditionStatus(empty) = (%v, true), want ok false", flags)
+	}
+
+	// And it must still render as something a human can read.
+	if got := empty.Error(); got != "sync_read: no servo flags recorded" {
+		t.Errorf("Error() = %q", got)
+	}
+
+	// A populated one still matches, so the guard didn't disable the hook.
+	populated := &SyncReadError{Op: "sync_read", Status: map[int]StatusError{6: ErrOverload}}
+	flags, ok := ConditionStatus(populated)
+	if !ok || flags != ErrOverload {
+		t.Errorf("ConditionStatus(populated) = (%v, %v), want (ErrOverload, true)", flags, ok)
+	}
+}

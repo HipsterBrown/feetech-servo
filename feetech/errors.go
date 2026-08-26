@@ -63,6 +63,10 @@ type SyncReadError struct {
 }
 
 func (e *SyncReadError) Error() string {
+	if len(e.Status) == 0 {
+		return fmt.Sprintf("%s: no servo flags recorded", e.Op)
+	}
+
 	ids := make([]int, 0, len(e.Status))
 	for id := range e.Status {
 		ids = append(ids, id)
@@ -76,6 +80,12 @@ func (e *SyncReadError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Op, strings.Join(parts, ", "))
 }
 
+// Pins the one property of the As hook below that can break invisibly: a
+// mistyped signature (As(error) bool, As(interface{}) error) still compiles and
+// is simply never called by errors.As, silently disabling ConditionStatus for
+// this type.
+var _ interface{ As(any) bool } = (*SyncReadError)(nil)
+
 // As implements the errors.As matching hook (see the errors.As docs) so that
 // ConditionStatus(err) keeps working unchanged: errors.As(err, &someStatusError)
 // resolves to the OR of every per-servo flag, exactly as if a single servo
@@ -88,6 +98,12 @@ func (e *SyncReadError) As(target any) bool {
 	var combined StatusError
 	for _, s := range e.Status {
 		combined |= s
+	}
+	if combined == 0 {
+		// Don't claim to be a StatusError with nothing set — a caller using
+		// errors.As directly, without going through ConditionStatus, would
+		// read that as a successful match reporting "no flags".
+		return false
 	}
 	*status = combined
 	return true
