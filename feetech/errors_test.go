@@ -118,22 +118,22 @@ func TestStatusError_AllFlags(t *testing.T) {
 
 func TestSplitStatus(t *testing.T) {
 	tests := []struct {
-		name         string
-		status       StatusError
-		wantValid    bool
-		wantErrIsNil bool
+		name      string
+		status    StatusError
+		wantValid bool
+		wantErr   StatusError // 0 means no error expected
 	}{
-		{"no flags", 0, true, true},
-		{"overload is a condition", ErrOverload, true, false},
-		{"overheat is a condition", ErrOverheat, true, false},
-		{"voltage is a condition", ErrVoltage, true, false},
-		{"angle limit is a condition", ErrAngleLimit, true, false},
-		{"multiple conditions", ErrOverload | ErrOverheat, true, false},
-		{"checksum invalidates", ErrChecksum, false, false},
-		{"instruction invalidates", ErrInstruction, false, false},
-		{"range invalidates", ErrRange, false, false},
-		{"any request flag invalidates the whole response", ErrOverload | ErrChecksum, false, false},
-		{"undefined bit invalidates", StatusError(0x80), false, false},
+		{"no flags", 0, true, 0},
+		{"overload is a condition", ErrOverload, true, ErrOverload},
+		{"overheat is a condition", ErrOverheat, true, ErrOverheat},
+		{"voltage is a condition", ErrVoltage, true, ErrVoltage},
+		{"angle limit is a condition", ErrAngleLimit, true, ErrAngleLimit},
+		{"multiple conditions", ErrOverload | ErrOverheat, true, ErrOverload | ErrOverheat},
+		{"checksum invalidates", ErrChecksum, false, ErrChecksum},
+		{"instruction invalidates", ErrInstruction, false, ErrInstruction},
+		{"range invalidates", ErrRange, false, ErrRange},
+		{"any request flag invalidates the whole response", ErrOverload | ErrChecksum, false, ErrOverload | ErrChecksum},
+		{"undefined bit invalidates", StatusError(0x80), false, StatusError(0x80)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -141,8 +141,12 @@ func TestSplitStatus(t *testing.T) {
 			if valid != tt.wantValid {
 				t.Errorf("payloadValid: got %v, want %v", valid, tt.wantValid)
 			}
-			if (err == nil) != tt.wantErrIsNil {
-				t.Errorf("err: got %v, wantNil %v", err, tt.wantErrIsNil)
+			if tt.wantErr == 0 {
+				if err != nil {
+					t.Errorf("err: got %v, want nil", err)
+				}
+			} else if !errors.Is(err, tt.wantErr) {
+				t.Errorf("err: got %v, want %v", err, tt.wantErr)
 			}
 		})
 	}

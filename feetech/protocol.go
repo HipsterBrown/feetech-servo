@@ -60,8 +60,7 @@ const (
 // request and answered it; the flag is a separate report about the motor.
 // Verified on hardware 2026-08-25 (STS3215): under ErrOverload the payload was
 // live and correct across 440 samples, and load reported the firmware's
-// post-trip protection torque exactly. See
-// .plans/2026-08-25-status-tolerant-reads.md.
+// post-trip protection torque exactly.
 //
 // Everything else — the request-rejection flags ErrRange, ErrChecksum and
 // ErrInstruction, plus the undefined bit 7 — means the servo did not accept the
