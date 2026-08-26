@@ -51,10 +51,14 @@ func (s *Servo) Ping(ctx context.Context) (int, error) {
 	return s.bus.Ping(ctx, s.id)
 }
 
-// DetectModel pings the servo and sets the model based on the returned model number.
+// DetectModel pings the servo and sets the model based on the returned model
+// number. A condition flag (overload, overheat, voltage, angle limit) still
+// carries a valid model number — the model is set and the condition error is
+// returned alongside, per ConditionStatus. A request-rejection flag leaves
+// the model untouched and returns the error.
 func (s *Servo) DetectModel(ctx context.Context) error {
 	modelNum, err := s.bus.Ping(ctx, s.id)
-	if err != nil {
+	if _, flagged := ConditionStatus(err); err != nil && !flagged {
 		return err
 	}
 
@@ -64,7 +68,7 @@ func (s *Servo) DetectModel(ctx context.Context) error {
 		return fmt.Errorf("unknown model number: %d", modelNum)
 	}
 
-	return nil
+	return err
 }
 
 // Position Control
