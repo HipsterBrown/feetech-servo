@@ -89,7 +89,7 @@ func TestServo_SetPositionWithTime(t *testing.T) {
 }
 
 func TestServo_Load(t *testing.T) {
-	// Load is at RegPresentLoad (size 2, signbit 9). Encode +50: 0x0032 -> bytes 32 00.
+	// Load is at RegPresentLoad (size 2, signbit 10). Encode +50: 0x0032 -> bytes 32 00.
 	mock := &transports.MockTransport{
 		ReadData: []byte{0xFF, 0xFF, 0x01, 0x04, 0x00, 0x32, 0x00, 0xC8},
 	}
