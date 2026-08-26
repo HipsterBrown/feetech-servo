@@ -57,6 +57,58 @@ func TestServo_DetectModel(t *testing.T) {
 	}
 }
 
+// TestServo_DetectModel_ConditionFlag verifies a flagged ping still sets the
+// model and reports the condition flag, mirroring Scan's treatment of the
+// same Ping response (see Bus.Scan). Before this fix, DetectModel returned
+// the ping error immediately and discarded the valid model number.
+func TestServo_DetectModel_ConditionFlag(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: errPacket(1, byte(ErrOverload))},                   // ping flagged
+			{Reply: readReplyPacket(1, byte(ErrOverload), 0x09, 0x03)}, // model 777, still flagged
+		},
+	}
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	err = servo.DetectModel(context.Background())
+	if flags, ok := ConditionStatus(err); !ok || flags != ErrOverload {
+		t.Fatalf("ConditionStatus: got (%v, %v), want (ErrOverload, true)", flags, ok)
+	}
+	if servo.Model().Name != "sts3215" {
+		t.Errorf("a flagged ping must still set the model: got %s want sts3215", servo.Model().Name)
+	}
+}
+
+// TestServo_DetectModel_RequestRejection verifies a request-rejection flag
+// (the servo never answered) leaves the model untouched and returns an error.
+func TestServo_DetectModel_RequestRejection(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: errPacket(1, byte(ErrChecksum))},
+		},
+	}
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, &ModelSCS0009)
+	if err := servo.DetectModel(context.Background()); err == nil {
+		t.Fatal("expected an error for a request-rejection flag")
+	}
+	if servo.Model().Name != "scs0009" {
+		t.Errorf("model must be left untouched: got %s want scs0009", servo.Model().Name)
+	}
+}
+
 func TestServo_SetPositionWithSpeed(t *testing.T) {
 	mock := &transports.MockTransport{ReadData: ackResponse()}
 	bus := newTestBus(t, mock)
@@ -89,7 +141,7 @@ func TestServo_SetPositionWithTime(t *testing.T) {
 }
 
 func TestServo_Load(t *testing.T) {
-	// Load is at RegPresentLoad (size 2, signbit 9). Encode +50: 0x0032 -> bytes 32 00.
+	// Load is at RegPresentLoad (size 2, signbit 10). Encode +50: 0x0032 -> bytes 32 00.
 	mock := &transports.MockTransport{
 		ReadData: []byte{0xFF, 0xFF, 0x01, 0x04, 0x00, 0x32, 0x00, 0xC8},
 	}

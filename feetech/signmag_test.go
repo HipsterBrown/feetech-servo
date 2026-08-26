@@ -33,3 +33,26 @@ func TestSignMagnitude_NoSignBitIsIdentity(t *testing.T) {
 		}
 	}
 }
+
+// TestPresentLoad_Decode covers real STS3215 readings: the direction bit is 10,
+// so a 10-bit magnitude (0-1000) sits in bits 0-9.
+func TestPresentLoad_Decode(t *testing.T) {
+	if RegPresentLoad.SignBit != 10 {
+		t.Fatalf("RegPresentLoad.SignBit = %d, want 10", RegPresentLoad.SignBit)
+	}
+	cases := []struct {
+		raw  int
+		want int
+		desc string
+	}{
+		{0, 0, "free movement"},
+		{200, 200, "overload protection backoff (protection_torque 20)"},
+		{404, 404, "clamped jaw"},
+		{1044, -20, "light holding load, reverse direction"},
+	}
+	for _, c := range cases {
+		if got := decodeSignMagnitude(c.raw, RegPresentLoad.SignBit); got != c.want {
+			t.Errorf("%s: decode(%d) = %d, want %d", c.desc, c.raw, got, c.want)
+		}
+	}
+}

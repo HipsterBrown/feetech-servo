@@ -1,12 +1,17 @@
 package feetech
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 )
 
 // Servo provides a high-level interface for controlling a single servo.
+//
+// Read accessors return the decoded value alongside a non-nil error when the
+// servo reports a condition flag (overload, overheat, voltage, angle limit);
+// see ConditionStatus. Callers that treat any error as fatal are unaffected.
 type Servo struct {
 	bus   *Bus
 	id    int
@@ -46,10 +51,14 @@ func (s *Servo) Ping(ctx context.Context) (int, error) {
 	return s.bus.Ping(ctx, s.id)
 }
 
-// DetectModel pings the servo and sets the model based on the returned model number.
+// DetectModel pings the servo and sets the model based on the returned model
+// number. A condition flag (overload, overheat, voltage, angle limit) still
+// carries a valid model number — the model is set and the condition error is
+// returned alongside, per ConditionStatus. A request-rejection flag leaves
+// the model untouched and returns the error.
 func (s *Servo) DetectModel(ctx context.Context) error {
 	modelNum, err := s.bus.Ping(ctx, s.id)
-	if err != nil {
+	if _, flagged := ConditionStatus(err); err != nil && !flagged {
 		return err
 	}
 
@@ -59,7 +68,7 @@ func (s *Servo) DetectModel(ctx context.Context) error {
 		return fmt.Errorf("unknown model number: %d", modelNum)
 	}
 
-	return nil
+	return err
 }
 
 // Position Control
@@ -67,10 +76,10 @@ func (s *Servo) DetectModel(ctx context.Context) error {
 // Position reads the current position.
 func (s *Servo) Position(ctx context.Context) (int, error) {
 	data, err := s.bus.ReadRegister(ctx, s.id, RegPresentPosition.Address, int(RegPresentPosition.Size))
-	if err != nil {
+	if len(data) == 0 {
 		return 0, err
 	}
-	return decodePositionWord(s.bus.Protocol(), data), nil
+	return decodePositionWord(s.bus.Protocol(), data), err
 }
 
 // SetPosition commands the servo to move to the specified position.
@@ -173,12 +182,12 @@ func (s *Servo) SetGoal(ctx context.Context, g GoalRequest) error {
 // Returns a signed value; negative indicates reverse direction.
 func (s *Servo) Velocity(ctx context.Context) (int, error) {
 	data, err := s.bus.ReadRegister(ctx, s.id, RegPresentVelocity.Address, int(RegPresentVelocity.Size))
-	if err != nil {
+	if len(data) == 0 {
 		return 0, err
 	}
 
 	raw := int(s.bus.Protocol().DecodeWord(data))
-	return decodeSignMagnitude(raw, RegPresentVelocity.SignBit), nil
+	return decodeSignMagnitude(raw, RegPresentVelocity.SignBit), err
 }
 
 // SetVelocity sets the goal velocity (for wheel mode).
@@ -194,10 +203,10 @@ func (s *Servo) SetVelocity(ctx context.Context, velocity int) error {
 // TorqueEnabled returns whether torque is enabled.
 func (s *Servo) TorqueEnabled(ctx context.Context) (bool, error) {
 	data, err := s.bus.ReadRegister(ctx, s.id, RegTorqueEnable.Address, 1)
-	if err != nil {
+	if len(data) == 0 {
 		return false, err
 	}
-	return data[0] != 0, nil
+	return data[0] != 0, err
 }
 
 // SetTorqueEnabled enables or disables torque.
@@ -224,40 +233,40 @@ func (s *Servo) Disable(ctx context.Context) error {
 // Moving returns whether the servo is currently moving.
 func (s *Servo) Moving(ctx context.Context) (bool, error) {
 	data, err := s.bus.ReadRegister(ctx, s.id, RegMoving.Address, 1)
-	if err != nil {
+	if len(data) == 0 {
 		return false, err
 	}
-	return data[0] != 0, nil
+	return data[0] != 0, err
 }
 
 // Load reads the current load.
 // Returns a signed value; negative indicates load in reverse direction.
 func (s *Servo) Load(ctx context.Context) (int, error) {
 	data, err := s.bus.ReadRegister(ctx, s.id, RegPresentLoad.Address, int(RegPresentLoad.Size))
-	if err != nil {
+	if len(data) == 0 {
 		return 0, err
 	}
 
 	raw := int(s.bus.Protocol().DecodeWord(data))
-	return decodeSignMagnitude(raw, RegPresentLoad.SignBit), nil
+	return decodeSignMagnitude(raw, RegPresentLoad.SignBit), err
 }
 
 // Voltage reads the current supply voltage in tenths of a volt.
 func (s *Servo) Voltage(ctx context.Context) (int, error) {
 	data, err := s.bus.ReadRegister(ctx, s.id, RegPresentVoltage.Address, 1)
-	if err != nil {
+	if len(data) == 0 {
 		return 0, err
 	}
-	return int(data[0]), nil
+	return int(data[0]), err
 }
 
 // Temperature reads the current temperature in degrees Celsius.
 func (s *Servo) Temperature(ctx context.Context) (int, error) {
 	data, err := s.bus.ReadRegister(ctx, s.id, RegPresentTemp.Address, 1)
-	if err != nil {
+	if len(data) == 0 {
 		return 0, err
 	}
-	return int(data[0]), nil
+	return int(data[0]), err
 }
 
 // Configuration
@@ -265,10 +274,10 @@ func (s *Servo) Temperature(ctx context.Context) (int, error) {
 // OperatingMode reads the current operating mode.
 func (s *Servo) OperatingMode(ctx context.Context) (OperatingMode, error) {
 	data, err := s.bus.ReadRegister(ctx, s.id, RegOperatingMode.Address, 1)
-	if err != nil {
+	if len(data) == 0 {
 		return 0, err
 	}
-	return OperatingMode(data[0]), nil
+	return OperatingMode(data[0]), err
 }
 
 // SetOperatingMode sets the operating mode.
@@ -279,18 +288,20 @@ func (s *Servo) SetOperatingMode(ctx context.Context, mode OperatingMode) error 
 
 // PositionLimits reads the min and max position limits.
 func (s *Servo) PositionLimits(ctx context.Context) (min, max int, err error) {
-	minData, err := s.bus.ReadRegister(ctx, s.id, RegMinAngleLimit.Address, 2)
-	if err != nil {
-		return 0, 0, err
+	minData, minErr := s.bus.ReadRegister(ctx, s.id, RegMinAngleLimit.Address, 2)
+	if len(minData) == 0 {
+		return 0, 0, minErr
 	}
 
-	maxData, err := s.bus.ReadRegister(ctx, s.id, RegMaxAngleLimit.Address, 2)
-	if err != nil {
-		return 0, 0, err
+	maxData, maxErr := s.bus.ReadRegister(ctx, s.id, RegMaxAngleLimit.Address, 2)
+	if len(maxData) == 0 {
+		return 0, 0, maxErr
 	}
+
+	err = cmp.Or(minErr, maxErr)
 
 	proto := s.bus.Protocol()
-	return int(proto.DecodeWord(minData)), int(proto.DecodeWord(maxData)), nil
+	return int(proto.DecodeWord(minData)), int(proto.DecodeWord(maxData)), err
 }
 
 // SetPositionLimits sets the min and max position limits.

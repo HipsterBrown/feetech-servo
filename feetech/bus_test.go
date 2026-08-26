@@ -3,6 +3,7 @@ package feetech
 import (
 	"bytes"
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -191,6 +192,134 @@ func TestBus_SyncRead_SCSUnsupported(t *testing.T) {
 	}
 }
 
+// TestBus_SyncRead_ConditionFlagKeepsAllResults verifies that a condition flag
+// (servo answered, motor is unhappy) on one servo in a multi-servo sync read
+// keeps every servo's payload in the result map, with an error whose
+// ConditionStatus reports the flag.
+func TestBus_SyncRead_ConditionFlagKeepsAllResults(t *testing.T) {
+	mock := &transports.MockTransport{
+		ReadData: append(
+			readReplyPacket(1, byte(ErrOverload), 0x00, 0x08), // servo 1: flagged, position 2048
+			readReplyPacket(2, 0x00, 0x00, 0x04)...,           // servo 2: clean, position 1024
+		),
+	}
+	bus, _ := NewBus(BusConfig{
+		Transport: mock,
+		Protocol:  ProtocolSTS,
+		Timeout:   100 * time.Millisecond,
+	})
+	defer bus.Close()
+
+	data, err := bus.SyncRead(context.Background(), RegPresentPosition.Address, 2, []int{1, 2})
+	if len(data) != 2 {
+		t.Fatalf("got %d results, want 2 (data: %v, err: %v)", len(data), data, err)
+	}
+
+	proto := bus.Protocol()
+	if pos := proto.DecodeWord(data[1]); pos != 2048 {
+		t.Errorf("servo 1 position: got %d, want 2048", pos)
+	}
+	if pos := proto.DecodeWord(data[2]); pos != 1024 {
+		t.Errorf("servo 2 position: got %d, want 1024", pos)
+	}
+
+	flags, ok := ConditionStatus(err)
+	if !ok {
+		t.Fatalf("ConditionStatus ok = false, want true for err %v", err)
+	}
+	if flags != ErrOverload {
+		t.Errorf("flags = %v, want ErrOverload", flags)
+	}
+}
+
+// TestBus_SyncRead_RequestFlagDiscardsResponse verifies that a request-rejection
+// flag (servo didn't accept the request) on any servo discards the whole
+// response: nil map, and ConditionStatus reports ok == false.
+func TestBus_SyncRead_RequestFlagDiscardsResponse(t *testing.T) {
+	mock := &transports.MockTransport{
+		ReadData: append(
+			readReplyPacket(1, byte(ErrChecksum), 0x00, 0x08),
+			readReplyPacket(2, 0x00, 0x00, 0x04)...,
+		),
+	}
+	bus, _ := NewBus(BusConfig{
+		Transport: mock,
+		Protocol:  ProtocolSTS,
+		Timeout:   100 * time.Millisecond,
+	})
+	defer bus.Close()
+
+	data, err := bus.SyncRead(context.Background(), RegPresentPosition.Address, 2, []int{1, 2})
+	if data != nil {
+		t.Errorf("expected nil map for request-rejection flag, got %v", data)
+	}
+	if err == nil {
+		t.Fatal("expected error for request-rejection flag")
+	}
+	if _, ok := ConditionStatus(err); ok {
+		t.Errorf("ConditionStatus ok = true, want false for request-rejection flag")
+	}
+}
+
+// TestBus_SyncRead_PerServoAttribution verifies that when several servos in
+// a sync read answer with condition flags, SyncRead reports which servo said
+// what — not just the OR of every flag with no way to tell which joint is
+// unhappy.
+func TestBus_SyncRead_PerServoAttribution(t *testing.T) {
+	mock := &transports.MockTransport{
+		ReadData: append(append(
+			readReplyPacket(1, byte(ErrOverheat), 0x00, 0x08), // servo 1: overheat
+			readReplyPacket(2, 0x00, 0x00, 0x04)...),          // servo 2: clean
+			readReplyPacket(3, byte(ErrOverload), 0x00, 0x02)...), // servo 3: overload
+	}
+	bus, _ := NewBus(BusConfig{
+		Transport: mock,
+		Protocol:  ProtocolSTS,
+		Timeout:   100 * time.Millisecond,
+	})
+	defer bus.Close()
+
+	data, err := bus.SyncRead(context.Background(), RegPresentPosition.Address, 2, []int{1, 2, 3})
+	if len(data) != 3 {
+		t.Fatalf("got %d results, want 3 (data: %v, err: %v)", len(data), data, err)
+	}
+
+	var syncErr *SyncReadError
+	if !errors.As(err, &syncErr) {
+		t.Fatalf("errors.As(err, &SyncReadError) = false for err %v", err)
+	}
+	if len(syncErr.Status) != 2 {
+		t.Fatalf("Status has %d entries, want 2: %v", len(syncErr.Status), syncErr.Status)
+	}
+	if syncErr.Status[1] != ErrOverheat {
+		t.Errorf("servo 1 flags: got %v, want ErrOverheat", syncErr.Status[1])
+	}
+	if syncErr.Status[3] != ErrOverload {
+		t.Errorf("servo 3 flags: got %v, want ErrOverload", syncErr.Status[3])
+	}
+	if _, ok := syncErr.Status[2]; ok {
+		t.Errorf("servo 2 was clean, should not appear in Status")
+	}
+
+	// ConditionStatus must still resolve to the combined flags.
+	flags, ok := ConditionStatus(err)
+	if !ok {
+		t.Fatalf("ConditionStatus ok = false, want true for err %v", err)
+	}
+	if want := ErrOverheat | ErrOverload; flags != want {
+		t.Errorf("combined flags: got %v, want %v", flags, want)
+	}
+
+	// Error() must be deterministic across repeated calls: map iteration
+	// order is random, the rendered message must not be.
+	want := "sync_read: servo 1 [overheat], servo 3 [overload]"
+	for i := 0; i < 20; i++ {
+		if got := err.Error(); got != want {
+			t.Fatalf("Error() = %q, want %q (iteration %d)", got, want, i)
+		}
+	}
+}
+
 func TestBus_InvalidID(t *testing.T) {
 	mock := &transports.MockTransport{}
 	bus, _ := NewBus(BusConfig{Transport: mock})
@@ -342,5 +471,97 @@ func TestBus_ContextCancellation(t *testing.T) {
 	_, err := bus.Ping(ctx, 1)
 	if err == nil {
 		t.Error("expected context cancellation error")
+	}
+}
+
+// readReplyPacket builds a read response from `id` carrying `data` with the
+// given status flags: FF FF id len status data... chk, where len = len(data)+2.
+func readReplyPacket(id byte, status byte, data ...byte) []byte {
+	length := byte(len(data) + 2)
+	pkt := []byte{0xFF, 0xFF, id, length, status}
+	pkt = append(pkt, data...)
+	sum := id + length + status
+	for _, b := range data {
+		sum += b
+	}
+	return append(pkt, ^sum)
+}
+
+func TestReadRegister_ReturnsPayloadWithConditionFlag(t *testing.T) {
+	mock := &transports.MockTransport{}
+	// Captured from hardware: servo 6 overloaded, present_position = 2221.
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: readReplyPacket(6, byte(ErrOverload), 0xAD, 0x08)},
+		},
+	}
+
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	data, err := bus.ReadRegister(context.Background(), 6, RegPresentPosition.Address, 2)
+
+	if err == nil {
+		t.Fatal("expected the overload flag to still be reported as an error")
+	}
+	flags, ok := ConditionStatus(err)
+	if !ok || flags != ErrOverload {
+		t.Fatalf("ConditionStatus: got (%v, %v), want (ErrOverload, true)", flags, ok)
+	}
+	if len(data) != 2 || data[0] != 0xAD || data[1] != 0x08 {
+		t.Fatalf("payload discarded or wrong: got % X, want AD 08", data)
+	}
+}
+
+func TestReadRegister_DiscardsPayloadOnRequestFlag(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: readReplyPacket(6, byte(ErrChecksum), 0xAD, 0x08)},
+		},
+	}
+
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	data, err := bus.ReadRegister(context.Background(), 6, RegPresentPosition.Address, 2)
+
+	if err == nil {
+		t.Fatal("expected a checksum flag to be an error")
+	}
+	if data != nil {
+		t.Fatalf("payload must be discarded on a request flag: got % X", data)
+	}
+	if _, ok := ConditionStatus(err); ok {
+		t.Error("ConditionStatus must not vouch for data behind a checksum flag")
+	}
+}
+
+func TestReadRegister_CleanReadUnchanged(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: readReplyPacket(6, 0x00, 0xAD, 0x08)},
+		},
+	}
+
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	data, err := bus.ReadRegister(context.Background(), 6, RegPresentPosition.Address, 2)
+	if err != nil {
+		t.Fatalf("clean read must not error: %v", err)
+	}
+	if len(data) != 2 || data[0] != 0xAD || data[1] != 0x08 {
+		t.Fatalf("got % X, want AD 08", data)
 	}
 }

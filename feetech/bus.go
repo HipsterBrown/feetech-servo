@@ -137,20 +137,39 @@ func (b *Bus) Ping(ctx context.Context, id int) (int, error) {
 		return 0, &ServoError{ID: id, Op: "ping", Err: err}
 	}
 
-	if resp.Error.HasError() {
+	// A condition flag means the servo is present and answering — it must not
+	// vanish from discovery. Carry the flag forward; only a request-rejection
+	// flag means this was not a usable answer.
+	pingValid, pingStatus := splitStatus(resp.Error)
+	if !pingValid {
 		return 0, &ServoError{ID: id, Op: "ping", Status: resp.Error}
 	}
 
 	// Now read model number
 	modelData, err := b.readRegisterLocked(ctx, byte(id), RegModelNumber.Address, byte(RegModelNumber.Size))
-	if err != nil {
+	if len(modelData) == 0 {
+		if err == nil {
+			err = ErrInvalidPacket
+		}
 		return 0, &ServoError{ID: id, Op: "read model", Err: err}
 	}
-
+	// Report every condition flag either read raised, not just one of them.
+	pingFlags, _ := ConditionStatus(pingStatus)
+	modelFlags, _ := ConditionStatus(err)
+	if flags := pingFlags | modelFlags; flags != 0 {
+		return int(b.protocol.DecodeWord(modelData)), &ServoError{ID: id, Op: "ping", Status: flags}
+	}
 	return int(b.protocol.DecodeWord(modelData)), nil
 }
 
 // ReadRegister reads bytes from a servo register.
+//
+// A servo condition flag (overload, overheat, voltage, angle limit) returns
+// BOTH the payload and a non-nil error: the servo answered, and the flag
+// describes the motor rather than the validity of the data. Callers that treat
+// any error as fatal are unaffected; callers that want the reading anyway
+// should check ConditionStatus(err). Request-rejection flags (checksum,
+// instruction, range) return nil data.
 func (b *Bus) ReadRegister(ctx context.Context, id int, address byte, length int) ([]byte, error) {
 	if err := b.validateID(id); err != nil {
 		return nil, err
@@ -256,13 +275,21 @@ func (b *Bus) SyncRead(ctx context.Context, address byte, dataLen int, ids []int
 		return nil, &CommError{Op: "sync_read", Err: err}
 	}
 
-	// Build result map
+	// Build result map. A request-rejection flag on any single servo discards
+	// the whole response (its payload is meaningless and packet framing past
+	// it can't be trusted either). A condition flag still means the servo
+	// answered, so its payload is kept and the flag is recorded per-servo to
+	// report alongside the rest of the results below.
 	result := make(map[int][]byte, len(packets))
+	perServoFlags := make(map[int]StatusError)
 	for _, pkt := range packets {
-		if pkt.Error.HasError() {
+		if payloadValid, _ := splitStatus(pkt.Error); !payloadValid {
 			return nil, &ServoError{ID: int(pkt.ID), Op: "sync_read", Status: pkt.Error}
 		}
 		result[int(pkt.ID)] = pkt.Parameters
+		if pkt.Error != 0 {
+			perServoFlags[int(pkt.ID)] = pkt.Error
+		}
 	}
 
 	// Check for missing responses
@@ -270,6 +297,14 @@ func (b *Bus) SyncRead(ctx context.Context, address byte, dataLen int, ids []int
 		if _, ok := result[id]; !ok {
 			return result, &ServoError{ID: id, Op: "sync_read", Err: ErrNoResponse}
 		}
+	}
+
+	// Condition flags came from one or more servos in the group; SyncReadError
+	// keeps the per-servo attribution instead of collapsing it into a single
+	// anonymous ID. ConditionStatus still resolves to the OR of the flags via
+	// SyncReadError.As, so callers checking flags are unaffected either way.
+	if len(perServoFlags) > 0 {
+		return result, &SyncReadError{Op: "sync_read", Status: perServoFlags}
 	}
 
 	return result, nil
@@ -341,13 +376,15 @@ func (b *Bus) Scan(ctx context.Context, startID, endID int) ([]FoundServo, error
 		}
 
 		modelNum, err := b.pingWithTimeout(ctx, id)
-		if err != nil {
+		status, flagged := ConditionStatus(err)
+		if err != nil && !flagged {
 			continue // No response at this ID
 		}
 
 		f := FoundServo{
 			ID:          id,
 			ModelNumber: modelNum,
+			Status:      status,
 		}
 
 		if model, ok := GetModelByNumber(modelNum); ok {
@@ -451,6 +488,14 @@ type FoundServo struct {
 	ID          int
 	ModelNumber int
 	Model       *Model // May be nil if model is unknown
+	// Status carries any condition flags the servo reported during discovery
+	// (overload, overheat, voltage, angle limit). Populated by Scan/Discover: a
+	// flagged servo is still reported there — it is present on the bus and its
+	// model number is valid; the flag says the motor needs attention. Zero means
+	// a clean ping there. BroadcastPing never sets this field — it drops any
+	// servo that reports a flag rather than reporting it with a Status, so a
+	// zero value from BroadcastPing means "not populated," not "clean."
+	Status StatusError
 }
 
 // Internal methods
@@ -506,11 +551,16 @@ func (b *Bus) readRegisterLocked(ctx context.Context, id, address, length byte) 
 		return nil, fmt.Errorf("wrong servo ID in response: expected %d, got %d", id, resp.ID)
 	}
 
-	if resp.Error.HasError() {
-		return nil, resp.Error
+	// A condition flag (overload/overheat/voltage/angle limit) describes the
+	// motor, not the validity of the response: return the payload AND the flag
+	// and let the caller decide. Callers that check `if err != nil` are
+	// unaffected. See splitStatus.
+	payloadValid, statusErr := splitStatus(resp.Error)
+	if !payloadValid {
+		return nil, statusErr
 	}
 
-	return resp.Parameters, nil
+	return resp.Parameters, statusErr
 }
 
 func (b *Bus) writeRegisterLocked(ctx context.Context, id, address byte, data []byte) error {

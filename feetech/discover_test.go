@@ -149,3 +149,100 @@ func TestBus_ReadHonorsContextDeadline(t *testing.T) {
 		t.Errorf("transport read timeout = %v; a 30ms ctx deadline should bound it well under 5s", mock.ReadTimeout)
 	}
 }
+
+func TestScan_IncludesOverloadedServo(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			// ID 1: ping answers with the overload flag set...
+			{Reply: errPacket(1, byte(ErrOverload))},
+			// ...and the follow-up model-number read carries 777 (0x0309) with the flag.
+			{Reply: readReplyPacket(1, byte(ErrOverload), 0x09, 0x03)},
+		},
+	}
+
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	found, err := bus.Scan(context.Background(), 1, 1)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(found) != 1 {
+		t.Fatalf("an overloaded servo must still be discovered: got %d servos", len(found))
+	}
+	if found[0].ModelNumber != 777 {
+		t.Errorf("ModelNumber: got %d, want 777", found[0].ModelNumber)
+	}
+	if found[0].Status != ErrOverload {
+		t.Errorf("Status: got %v, want ErrOverload", found[0].Status)
+	}
+}
+
+// TestScan_MergesConditionFlagsFromBothReads guards commit 81ca6e3's flag
+// merge in Bus.Ping (`pingFlags | modelFlags`, bus.go). It sets DIFFERENT
+// condition flags on the ping reply and the model-number read, so the
+// assertion can only pass if both sources are OR'd together — a mutation to
+// either operand alone (pingFlags or modelFlags by itself) leaves one flag
+// missing and fails this test, unlike TestScan_IncludesOverloadedServo which
+// sets the same flag on both replies and can't distinguish the source.
+func TestScan_MergesConditionFlagsFromBothReads(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			// ID 1: ping answers with ErrOverload...
+			{Reply: errPacket(1, byte(ErrOverload))},
+			// ...but the follow-up model-number read carries a DIFFERENT flag.
+			{Reply: readReplyPacket(1, byte(ErrOverheat), 0x09, 0x03)},
+		},
+	}
+
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	found, err := bus.Scan(context.Background(), 1, 1)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(found) != 1 {
+		t.Fatalf("expected 1 servo, got %d", len(found))
+	}
+	want := ErrOverload | ErrOverheat
+	if found[0].Status != want {
+		t.Errorf("Status: got %v, want %v (OR of ping and model-read flags)", found[0].Status, want)
+	}
+}
+
+// TestScan_SkipsRequestRejectionFlag guards against a plausible future
+// "simplification" of the Scan filter (e.g. only checking IsNoResponse):
+// a request-rejection flag (range/checksum/instruction) on the ping itself
+// means the servo never answered the question, so it must not enter
+// discovery with a zero ModelNumber.
+func TestScan_SkipsRequestRejectionFlag(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: errPacket(1, byte(ErrRange))},
+		},
+	}
+
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	found, err := bus.Scan(context.Background(), 1, 1)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(found) != 0 {
+		t.Fatalf("a servo that rejected the ping request must not be discovered: got %d servos", len(found))
+	}
+}

@@ -370,3 +370,146 @@ func TestServoGroup_DisableAll(t *testing.T) {
 		t.Errorf("address: %02X", mock.WriteData[5])
 	}
 }
+
+// TestServo_Accessors_ReturnValueWithConditionFlag asserts every read accessor
+// hands back its decoded value even when the servo reports a condition flag.
+func TestServo_Accessors_ReturnValueWithConditionFlag(t *testing.T) {
+	ovl := byte(ErrOverload)
+
+	tests := []struct {
+		name  string
+		reply []byte
+		read  func(*Servo) (int, error)
+		want  int
+	}{
+		{
+			// Hardware capture: position 2221 while overloaded.
+			name:  "Position",
+			reply: readReplyPacket(6, ovl, 0xAD, 0x08),
+			read:  func(s *Servo) (int, error) { return s.Position(context.Background()) },
+			want:  2221,
+		},
+		{
+			// Hardware capture: load 200 (post-trip protection torque).
+			name:  "Load",
+			reply: readReplyPacket(6, ovl, 0xC8, 0x00),
+			read:  func(s *Servo) (int, error) { return s.Load(context.Background()) },
+			want:  200,
+		},
+		{
+			name:  "Temperature",
+			reply: readReplyPacket(6, ovl, 39),
+			read:  func(s *Servo) (int, error) { return s.Temperature(context.Background()) },
+			want:  39,
+		},
+		{
+			name:  "Voltage",
+			reply: readReplyPacket(6, ovl, 74),
+			read:  func(s *Servo) (int, error) { return s.Voltage(context.Background()) },
+			want:  74,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &transports.MockTransport{}
+			mock.Script = &transports.Script{Steps: []transports.Step{{Reply: tt.reply}}}
+
+			bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+			if err != nil {
+				t.Fatalf("NewBus: %v", err)
+			}
+			defer bus.Close()
+
+			got, err := tt.read(NewServo(bus, 6, nil))
+
+			if got != tt.want {
+				t.Errorf("value: got %d, want %d", got, tt.want)
+			}
+			flags, ok := ConditionStatus(err)
+			if !ok || flags != ErrOverload {
+				t.Errorf("ConditionStatus: got (%v, %v), want (ErrOverload, true)", flags, ok)
+			}
+		})
+	}
+}
+
+// TestServo_PositionLimits_ConditionFlags covers PositionLimits' non-mechanical
+// branches: both reads flagged (values survive, flag reported), and the second
+// read hard-failing after the first succeeded (good min discarded, 0,0 returned).
+func TestServo_PositionLimits_ConditionFlags(t *testing.T) {
+	t.Run("min error wins when both differ", func(t *testing.T) {
+		// Min and max carry different condition flags: this is the only case that
+		// actually distinguishes minErr-first precedence from maxErr-first — when
+		// both flags are equal (as in "both flagged overload" below), either order
+		// produces the same visible error.
+		mock := &transports.MockTransport{}
+		mock.Script = &transports.Script{Steps: []transports.Step{
+			{Reply: readReplyPacket(1, byte(ErrVoltage), 0x64, 0x00)},  // min = 100
+			{Reply: readReplyPacket(1, byte(ErrOverheat), 0xA0, 0x0F)}, // max = 4000
+		}}
+
+		bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+		if err != nil {
+			t.Fatalf("NewBus: %v", err)
+		}
+		defer bus.Close()
+
+		min, max, err := NewServo(bus, 1, nil).PositionLimits(context.Background())
+		if min != 100 || max != 4000 {
+			t.Errorf("limits: got min=%d max=%d, want 100/4000", min, max)
+		}
+		flags, ok := ConditionStatus(err)
+		if !ok || flags != ErrVoltage {
+			t.Errorf("ConditionStatus: got (%v, %v), want (ErrVoltage, true) — minErr must win", flags, ok)
+		}
+	})
+
+	t.Run("both flagged overload", func(t *testing.T) {
+		mock := &transports.MockTransport{}
+		mock.Script = &transports.Script{Steps: []transports.Step{
+			{Reply: readReplyPacket(1, byte(ErrOverload), 0x64, 0x00)}, // min = 100
+			{Reply: readReplyPacket(1, byte(ErrOverload), 0xA0, 0x0F)}, // max = 4000
+		}}
+
+		bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+		if err != nil {
+			t.Fatalf("NewBus: %v", err)
+		}
+		defer bus.Close()
+
+		min, max, err := NewServo(bus, 1, nil).PositionLimits(context.Background())
+		if min != 100 || max != 4000 {
+			t.Errorf("limits: got min=%d max=%d, want 100/4000", min, max)
+		}
+		flags, ok := ConditionStatus(err)
+		if !ok || flags != ErrOverload {
+			t.Errorf("ConditionStatus: got (%v, %v), want (ErrOverload, true)", flags, ok)
+		}
+	})
+
+	t.Run("max hard-fails after min succeeds", func(t *testing.T) {
+		mock := &transports.MockTransport{}
+		mock.Script = &transports.Script{Steps: []transports.Step{
+			{Reply: readReplyPacket(1, 0x00, 0x64, 0x00)},              // min = 100, no flag
+			{Reply: readReplyPacket(1, byte(ErrChecksum), 0xA0, 0x0F)}, // request-rejected, no payload
+		}}
+
+		bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+		if err != nil {
+			t.Fatalf("NewBus: %v", err)
+		}
+		defer bus.Close()
+
+		min, max, err := NewServo(bus, 1, nil).PositionLimits(context.Background())
+		if min != 0 || max != 0 {
+			t.Errorf("limits: got min=%d max=%d, want 0/0 (good min discarded)", min, max)
+		}
+		if err == nil {
+			t.Fatal("expected an error")
+		}
+		if _, ok := ConditionStatus(err); ok {
+			t.Error("ConditionStatus: got ok=true, want false for a request-rejection flag")
+		}
+	})
+}

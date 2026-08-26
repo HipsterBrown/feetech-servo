@@ -95,10 +95,10 @@ func (b *Bus) Scan(ctx context.Context, startID, endID int) ([]FoundServo, error
 func (b *Bus) Action(ctx context.Context) error
 
 // Low-level operations
-func (b *Bus) Read(ctx context.Context, id int, address byte, length byte) ([]byte, error)
-func (b *Bus) Write(ctx context.Context, id int, address byte, data []byte) error
-func (b *Bus) SyncRead(ctx context.Context, address, size byte, ids []int) (map[int][]byte, error)
-func (b *Bus) SyncWrite(ctx context.Context, address, size byte, data map[int][]byte) error
+func (b *Bus) ReadRegister(ctx context.Context, id int, address byte, length int) ([]byte, error)
+func (b *Bus) WriteRegister(ctx context.Context, id int, address byte, data []byte) error
+func (b *Bus) SyncRead(ctx context.Context, address byte, dataLen int, ids []int) (map[int][]byte, error)
+func (b *Bus) SyncWrite(ctx context.Context, address byte, dataLen int, servoData map[int][]byte) error
 func (b *Bus) RegWrite(ctx context.Context, id int, address byte, data []byte) error
 
 // Close the bus and release resources
@@ -111,7 +111,7 @@ The `Servo` type represents an individual servo motor:
 
 ```go
 // Create a new servo
-func NewServo(bus *Bus, id int, model *ServoModel) *Servo
+func NewServo(bus *Bus, id int, model *Model) *Servo
 
 // Basic operations
 func (s *Servo) Ping(ctx context.Context) (int, error)
@@ -136,11 +136,11 @@ func (s *Servo) Voltage(ctx context.Context) (int, error)
 func (s *Servo) Temperature(ctx context.Context) (int, error)
 
 // Operating mode
-func (s *Servo) OperatingMode(ctx context.Context) (byte, error)
-func (s *Servo) SetOperatingMode(ctx context.Context, mode byte) error
+func (s *Servo) OperatingMode(ctx context.Context) (OperatingMode, error)
+func (s *Servo) SetOperatingMode(ctx context.Context, mode OperatingMode) error
 
 // Model information
-func (s *Servo) Model() *ServoModel
+func (s *Servo) Model() *Model
 func (s *Servo) ID() int
 
 // Configuration (EEPROM writes)
@@ -195,15 +195,16 @@ func (g *ServoGroup) ServoByID(id int) *Servo
 type BusConfig struct {
     Port      string               // Serial port path (e.g., "/dev/ttyUSB0")
     BaudRate  int                  // Communication speed (default: 1000000)
-    Protocol  int                  // Protocol: ProtocolSTS or ProtocolSCS
+    Protocol  ProtocolVersion      // Protocol: ProtocolSTS or ProtocolSCS
     Timeout   time.Duration        // Communication timeout (default: 1 second)
     Transport Transport            // Optional: custom transport (for testing)
 }
 
 type FoundServo struct {
-    ID          int          // Servo ID found on bus
-    ModelNumber int          // Hardware model number
-    Model       *ServoModel  // Model specification (nil if unknown)
+    ID          int         // Servo ID found on bus
+    ModelNumber int         // Hardware model number
+    Model       *Model      // Model specification (nil if unknown)
+    Status      StatusError // Condition flags reported during discovery (0 if clean)
 }
 
 // PositionMap is used for map-based servo control
@@ -773,6 +774,43 @@ if err != nil {
     log.Printf("Failed to read position: %v", err)
 }
 ```
+
+### Status-Tolerant Reads
+
+A servo response carries a status byte with two kinds of flags, and they are
+handled differently:
+
+- **Condition flags** (`ErrVoltage`, `ErrAngleLimit`, `ErrOverheat`,
+  `ErrOverload`) describe the motor's physical state. The servo understood
+  the request and answered it, so read accessors return the decoded value
+  **and** the error.
+- **Request flags** (`ErrRange`, `ErrChecksum`, `ErrInstruction`, plus the
+  undefined bit 7) mean the servo rejected the request. Only an error is
+  returned; there is no payload to trust.
+
+Use `feetech.ConditionStatus` to tell them apart and safely use the value:
+
+```go
+pos, err := servo.Position(ctx)
+if flags, ok := feetech.ConditionStatus(err); ok {
+    // pos is valid — the servo answered. The flag describes the motor.
+    log.Printf("position %d valid, but servo reports %v", pos, flags)
+} else if err != nil {
+    return err
+}
+```
+
+Callers that only check `if err != nil { return err }` are unaffected — they
+just treat a condition flag as an error like any other, same as before.
+
+The same contract applies to `Bus.SyncRead` and `ServoGroup.Positions`: a
+condition flag on any servo in the group keeps every servo's payload in the
+result map, alongside an error `ConditionStatus` recognizes. A request flag
+on any servo still discards the whole response (`nil` map).
+
+This also changes discovery: an overloaded or overheating servo used to
+vanish from `Discover`/`Scan` entirely. It now still appears, with
+`FoundServo.Status` set to the reported condition flags.
 
 ## Thread Safety
 

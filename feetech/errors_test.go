@@ -2,6 +2,7 @@ package feetech
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -112,5 +113,101 @@ func TestStatusError_AllFlags(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("StatusError(all) missing %q in %q", want, got)
 		}
+	}
+}
+
+func TestSplitStatus(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    StatusError
+		wantValid bool
+		wantErr   StatusError // 0 means no error expected
+	}{
+		{"no flags", 0, true, 0},
+		{"overload is a condition", ErrOverload, true, ErrOverload},
+		{"overheat is a condition", ErrOverheat, true, ErrOverheat},
+		{"voltage is a condition", ErrVoltage, true, ErrVoltage},
+		{"angle limit is a condition", ErrAngleLimit, true, ErrAngleLimit},
+		{"multiple conditions", ErrOverload | ErrOverheat, true, ErrOverload | ErrOverheat},
+		{"checksum invalidates", ErrChecksum, false, ErrChecksum},
+		{"instruction invalidates", ErrInstruction, false, ErrInstruction},
+		{"range invalidates", ErrRange, false, ErrRange},
+		{"any request flag invalidates the whole response", ErrOverload | ErrChecksum, false, ErrOverload | ErrChecksum},
+		{"undefined bit invalidates", StatusError(0x80), false, StatusError(0x80)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			valid, err := splitStatus(tt.status)
+			if valid != tt.wantValid {
+				t.Errorf("payloadValid: got %v, want %v", valid, tt.wantValid)
+			}
+			if tt.wantErr == 0 {
+				if err != nil {
+					t.Errorf("err: got %v, want nil", err)
+				}
+			} else if !errors.Is(err, tt.wantErr) {
+				t.Errorf("err: got %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestConditionStatus(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		wantFlags StatusError
+		wantOK    bool
+	}{
+		{"nil error", nil, 0, false},
+		{"bare condition flag", ErrOverload, ErrOverload, true},
+		{"combined conditions", ErrOverload | ErrOverheat, ErrOverload | ErrOverheat, true},
+		{"request flag is not a condition", ErrChecksum, 0, false},
+		{"mixed flags are not a condition", ErrOverload | ErrChecksum, 0, false},
+		{"undefined bit is not a condition", StatusError(0x80), 0, false},
+		{"transport error", ErrTimeout, 0, false},
+		{"wrapped in ServoError", &ServoError{ID: 6, Op: "ping", Status: ErrOverload}, ErrOverload, true},
+		{"wrapped with fmt", fmt.Errorf("read: %w", ErrOverload), ErrOverload, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			flags, ok := ConditionStatus(tt.err)
+			if ok != tt.wantOK {
+				t.Errorf("ok: got %v, want %v", ok, tt.wantOK)
+			}
+			if flags != tt.wantFlags {
+				t.Errorf("flags: got %v, want %v", flags, tt.wantFlags)
+			}
+		})
+	}
+}
+
+// TestSyncReadError_EmptyStatus covers the degenerate shapes SyncRead itself
+// never constructs (it guards on len(perServoFlags) > 0), so that a caller
+// building one by hand, or a future regression in that guard, cannot produce a
+// bogus "matched, no flags" result.
+func TestSyncReadError_EmptyStatus(t *testing.T) {
+	empty := &SyncReadError{Op: "sync_read"}
+
+	// The As hook must decline rather than report a zero StatusError as a match:
+	// a caller using errors.As directly would read a true return as success.
+	var status StatusError
+	if errors.As(error(empty), &status) {
+		t.Errorf("errors.As matched an empty SyncReadError, got status %v", status)
+	}
+	if flags, ok := ConditionStatus(empty); ok {
+		t.Errorf("ConditionStatus(empty) = (%v, true), want ok false", flags)
+	}
+
+	// And it must still render as something a human can read.
+	if got := empty.Error(); got != "sync_read: no servo flags recorded" {
+		t.Errorf("Error() = %q", got)
+	}
+
+	// A populated one still matches, so the guard didn't disable the hook.
+	populated := &SyncReadError{Op: "sync_read", Status: map[int]StatusError{6: ErrOverload}}
+	flags, ok := ConditionStatus(populated)
+	if !ok || flags != ErrOverload {
+		t.Errorf("ConditionStatus(populated) = (%v, %v), want (ErrOverload, true)", flags, ok)
 	}
 }

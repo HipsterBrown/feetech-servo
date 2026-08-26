@@ -58,9 +58,10 @@ var (
 	RegLock         = Register{Address: 55, Size: 1}
 
 	// Feedback registers (read-only)
+	// present_load: 0-1000 magnitude in bits 0-9, bit 10 is direction.
 	RegPresentPosition = Register{Address: 56, Size: 2, ReadOnly: true, SignBit: 15}
 	RegPresentVelocity = Register{Address: 58, Size: 2, ReadOnly: true, SignBit: 15}
-	RegPresentLoad     = Register{Address: 60, Size: 2, ReadOnly: true, SignBit: 9}
+	RegPresentLoad     = Register{Address: 60, Size: 2, ReadOnly: true, SignBit: 10}
 	RegPresentVoltage  = Register{Address: 62, Size: 1, ReadOnly: true}
 	RegPresentTemp     = Register{Address: 63, Size: 1, ReadOnly: true}
 	RegAsyncWriteFlag  = Register{Address: 64, Size: 1, ReadOnly: true}
