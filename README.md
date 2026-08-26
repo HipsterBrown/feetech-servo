@@ -803,13 +803,10 @@ if flags, ok := feetech.ConditionStatus(err); ok {
 Callers that only check `if err != nil { return err }` are unaffected — they
 just treat a condition flag as an error like any other, same as before.
 
-This value-plus-error contract applies only to the single-servo read path
-(`Bus.ReadRegister` and the `Servo` accessors built on it, like `Position`).
-`Bus.SyncRead` and `ServoGroup.Positions` still discard the entire response
-and return `nil` on any status flag, condition or request. Do not use
-`ConditionStatus` to vouch for their results — it will happily report
-`ok == true` for the `ServoError` a sync read returns even though the map
-that came back is `nil`.
+The same contract applies to `Bus.SyncRead` and `ServoGroup.Positions`: a
+condition flag on any servo in the group keeps every servo's payload in the
+result map, alongside an error `ConditionStatus` recognizes. A request flag
+on any servo still discards the whole response (`nil` map).
 
 This also changes discovery: an overloaded or overheating servo used to
 vanish from `Discover`/`Scan` entirely. It now still appears, with
