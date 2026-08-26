@@ -848,7 +848,7 @@ overheating; read occasionally if you need that signal.
 `Bus.SyncWrite` never reads an ack, so the status contract above doesn't
 apply to it — it can still fail locally (closed bus, bad servo ID, a
 data-length mismatch) or on send. The same is true for every `ServoGroup`
-write except `RegWritePositions`, which all go through `SyncWrite`.
+write except `RegWritePositions` — they all go through `SyncWrite`.
 `ServoGroup.RegWritePositions` is the exception to that exception: it calls
 `Bus.RegWrite` per servo, so the write contract above (nil on a condition
 flag, error only on rejection) does apply to it.

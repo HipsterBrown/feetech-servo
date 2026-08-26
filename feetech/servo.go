@@ -321,7 +321,11 @@ func (s *Servo) SetPositionLimits(ctx context.Context, min, max int) error {
 // also disable torque first.
 
 // SetID changes the servo's ID.
-// The servo object is updated with the new ID on success.
+//
+// The servo object is updated with the new ID whenever the ID write itself
+// landed — including when SetID returns non-nil because only the EEPROM
+// re-lock failed, since the servo is then already answering to newID. On any
+// other error the ID is unchanged.
 func (s *Servo) SetID(ctx context.Context, newID int) error {
 	if newID < 0 || newID > int(MaxServoID) {
 		return fmt.Errorf("%w: %d", ErrInvalidID, newID)
