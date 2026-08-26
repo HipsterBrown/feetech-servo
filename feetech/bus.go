@@ -186,6 +186,13 @@ func (b *Bus) ReadRegister(ctx context.Context, id int, address byte, length int
 }
 
 // WriteRegister writes bytes to a servo register.
+//
+// A write has no payload to protect, so the contract is simpler than
+// ReadRegister's: err answers only "did the instruction take effect?". A
+// servo condition flag (overload, overheat, voltage, angle limit) alone
+// still returns nil — the servo accepted and executed the write. err is
+// non-nil only when the servo rejects the request outright (range, checksum,
+// instruction, or the undefined bit 7); see isRejection.
 func (b *Bus) WriteRegister(ctx context.Context, id int, address byte, data []byte) error {
 	if err := b.validateID(id); err != nil {
 		return err
@@ -312,6 +319,9 @@ func (b *Bus) SyncRead(ctx context.Context, address byte, dataLen int, ids []int
 
 // RegWrite writes data to a servo's buffer without immediate execution.
 // Call Action() to execute all buffered writes.
+//
+// Same write contract as WriteRegister: nil on a condition flag (the buffered
+// write still took), non-nil only on rejection.
 func (b *Bus) RegWrite(ctx context.Context, id int, address byte, data []byte) error {
 	if err := b.validateID(id); err != nil {
 		return err

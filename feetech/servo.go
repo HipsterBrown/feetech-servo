@@ -12,6 +12,9 @@ import (
 // Read accessors return the decoded value alongside a non-nil error when the
 // servo reports a condition flag (overload, overheat, voltage, angle limit);
 // see ConditionStatus. Callers that treat any error as fatal are unaffected.
+// Write methods (SetPosition, SetGoal, and the rest) return nil on the same
+// condition flags — the write still took effect — and a non-nil error only
+// when the servo rejects the request outright.
 type Servo struct {
 	bus   *Bus
 	id    int
