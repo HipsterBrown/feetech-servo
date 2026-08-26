@@ -332,12 +332,12 @@ func (s *Servo) SetID(ctx context.Context, newID int) error {
 		return fmt.Errorf("failed to disable torque: %w", err)
 	}
 
-	if err := s.writeRegister(ctx, RegID, []byte{byte(newID)}); err != nil {
-		return err
+	err := s.writeRegister(ctx, RegID, []byte{byte(newID)})
+	if err == nil || errors.Is(err, errRelockFailed) {
+		// The ID write itself landed; only the relock cleanup didn't.
+		s.id = newID
 	}
-
-	s.id = newID
-	return nil
+	return err
 }
 
 // SetBaudRate changes the servo's baud rate.
@@ -434,6 +434,12 @@ func (s *Servo) writeRegister(ctx context.Context, reg Register, data []byte) er
 	return s.bus.WriteRegister(ctx, s.id, reg.Address, data)
 }
 
+// errRelockFailed tags a writeEEPROM failure that happened only in the
+// re-lock step -- the target write itself landed. Callers that track local
+// state mirroring the write (SetID's s.id) can check errors.Is(err,
+// errRelockFailed) to know the write took effect despite the non-nil error.
+var errRelockFailed = errors.New("EEPROM re-lock failed")
+
 // writeEEPROM unlocks the lock register, performs the write, and re-locks. On
 // a write failure, the re-lock is still attempted; errors are joined.
 //
@@ -462,7 +468,7 @@ func (s *Servo) writeEEPROM(ctx context.Context, address byte, data []byte) erro
 	case writeErr != nil:
 		return writeErr
 	case relockErr != nil:
-		return relockErr
+		return fmt.Errorf("%w: %w", errRelockFailed, relockErr)
 	}
 	return nil
 }

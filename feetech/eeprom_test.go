@@ -269,6 +269,94 @@ func TestServo_SetID_RejectionOnTorqueDisable_Aborts(t *testing.T) {
 	}
 }
 
+// TestServo_SetID_RelockRejected_IDStillUpdated is the regression this task
+// fixes: the target ID write lands cleanly, but the re-lock ack carries a
+// genuine rejection flag. writeEEPROM returns a wrapped errRelockFailed, and
+// SetID must still update s.id -- the physical servo answered to newID even
+// though the cleanup step failed.
+func TestServo_SetID_RelockRejected_IDStillUpdated(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: ackPacket(1)},                    // torque-disable
+			{Reply: ackPacket(1)},                    // unlock
+			{Reply: ackPacket(1)},                    // id write -- lands cleanly
+			{Reply: errPacket(1, byte(ErrChecksum))}, // relock -- rejected
+		},
+	}
+	bus := newTestBus(t, mock)
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	err := servo.SetID(context.Background(), 7)
+	if err == nil {
+		t.Fatal("expected SetID to return an error when the relock is rejected")
+	}
+	if !errors.Is(err, errRelockFailed) {
+		t.Errorf("expected errors.Is(err, errRelockFailed), got: %v", err)
+	}
+	if servo.ID() != 7 {
+		t.Errorf("servo.ID() = %d, want 7 (the ID write landed; only the relock cleanup failed)", servo.ID())
+	}
+}
+
+// TestServo_SetID_TargetWriteRejected_IDUnchanged pins the case that must
+// keep working: the target ID write itself is rejected (relock clean), so
+// the servo never changed ID and s.id must not be updated.
+func TestServo_SetID_TargetWriteRejected_IDUnchanged(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: ackPacket(1)},                    // torque-disable
+			{Reply: ackPacket(1)},                    // unlock
+			{Reply: errPacket(1, byte(ErrChecksum))}, // id write -- rejected
+			{Reply: ackPacket(1)},                    // relock -- clean
+		},
+	}
+	bus := newTestBus(t, mock)
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	err := servo.SetID(context.Background(), 7)
+	if err == nil {
+		t.Fatal("expected SetID to return an error when the target write is rejected")
+	}
+	if servo.ID() != 1 {
+		t.Errorf("servo.ID() = %d, want unchanged 1", servo.ID())
+	}
+}
+
+// TestServo_SetID_TargetAndRelockRejected_IDUnchanged pins the errors.Join
+// interaction: when BOTH the target write and the relock are rejected,
+// writeEEPROM returns errors.Join(writeErr, relockErr) without ever wrapping
+// errRelockFailed, so errors.Is(err, errRelockFailed) must be false here --
+// unlike the relock-only-failure case, the ID genuinely did not change.
+func TestServo_SetID_TargetAndRelockRejected_IDUnchanged(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: ackPacket(1)},                       // torque-disable
+			{Reply: ackPacket(1)},                       // unlock
+			{Reply: errPacket(1, byte(ErrChecksum))},    // id write -- rejected
+			{Reply: errPacket(1, byte(ErrInstruction))}, // relock -- also rejected
+		},
+	}
+	bus := newTestBus(t, mock)
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	err := servo.SetID(context.Background(), 7)
+	if err == nil {
+		t.Fatal("expected SetID to return an error when both the target write and relock are rejected")
+	}
+	if errors.Is(err, errRelockFailed) {
+		t.Errorf("errors.Is(err, errRelockFailed) = true, want false: the target write also failed, so the ID did not change: %v", err)
+	}
+	if servo.ID() != 1 {
+		t.Errorf("servo.ID() = %d, want unchanged 1", servo.ID())
+	}
+}
+
 // TestServo_SetBaudRate_ConditionFlagOnTorqueDisable_Proceeds mirrors
 // TestServo_SetID_ConditionFlagOnTorqueDisable_Proceeds for SetBaudRate.
 func TestServo_SetBaudRate_ConditionFlagOnTorqueDisable_Proceeds(t *testing.T) {
