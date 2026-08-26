@@ -2,6 +2,7 @@ package feetech
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -112,5 +113,67 @@ func TestStatusError_AllFlags(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("StatusError(all) missing %q in %q", want, got)
 		}
+	}
+}
+
+func TestSplitStatus(t *testing.T) {
+	tests := []struct {
+		name         string
+		status       StatusError
+		wantValid    bool
+		wantErrIsNil bool
+	}{
+		{"no flags", 0, true, true},
+		{"overload is a condition", ErrOverload, true, false},
+		{"overheat is a condition", ErrOverheat, true, false},
+		{"voltage is a condition", ErrVoltage, true, false},
+		{"angle limit is a condition", ErrAngleLimit, true, false},
+		{"multiple conditions", ErrOverload | ErrOverheat, true, false},
+		{"checksum invalidates", ErrChecksum, false, false},
+		{"instruction invalidates", ErrInstruction, false, false},
+		{"range invalidates", ErrRange, false, false},
+		{"any request flag invalidates the whole response", ErrOverload | ErrChecksum, false, false},
+		{"undefined bit invalidates", StatusError(0x80), false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			valid, err := splitStatus(tt.status)
+			if valid != tt.wantValid {
+				t.Errorf("payloadValid: got %v, want %v", valid, tt.wantValid)
+			}
+			if (err == nil) != tt.wantErrIsNil {
+				t.Errorf("err: got %v, wantNil %v", err, tt.wantErrIsNil)
+			}
+		})
+	}
+}
+
+func TestConditionStatus(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		wantFlags StatusError
+		wantOK    bool
+	}{
+		{"nil error", nil, 0, false},
+		{"bare condition flag", ErrOverload, ErrOverload, true},
+		{"combined conditions", ErrOverload | ErrOverheat, ErrOverload | ErrOverheat, true},
+		{"request flag is not a condition", ErrChecksum, 0, false},
+		{"mixed flags are not a condition", ErrOverload | ErrChecksum, 0, false},
+		{"undefined bit is not a condition", StatusError(0x80), 0, false},
+		{"transport error", ErrTimeout, 0, false},
+		{"wrapped in ServoError", &ServoError{ID: 6, Op: "ping", Status: ErrOverload}, ErrOverload, true},
+		{"wrapped with fmt", fmt.Errorf("read: %w", ErrOverload), ErrOverload, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			flags, ok := ConditionStatus(tt.err)
+			if ok != tt.wantOK {
+				t.Errorf("ok: got %v, want %v", ok, tt.wantOK)
+			}
+			if flags != tt.wantFlags {
+				t.Errorf("flags: got %v, want %v", flags, tt.wantFlags)
+			}
+		})
 	}
 }

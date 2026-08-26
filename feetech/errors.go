@@ -68,3 +68,37 @@ func GetServoError(err error) (*ServoError, bool) {
 	}
 	return nil, false
 }
+
+// ConditionStatus reports the servo condition flags carried by err, if err is
+// purely a condition report (overload, overheat, voltage, angle limit).
+//
+// ok is true only when the data returned alongside err is safe to use. It is
+// false for transport failures, and false for request-rejection flags
+// (checksum, instruction, range) where the servo never answered the question.
+//
+//	pos, err := servo.Position(ctx)
+//	if flags, ok := ConditionStatus(err); ok {
+//	    // pos is valid; flags says why the servo is unhappy
+//	} else if err != nil {
+//	    return err
+//	}
+func ConditionStatus(err error) (StatusError, bool) {
+	if err == nil {
+		return 0, false
+	}
+
+	var status StatusError
+	if !errors.As(err, &status) {
+		var servoErr *ServoError
+		if errors.As(err, &servoErr) && servoErr.Status != 0 {
+			status = servoErr.Status
+		} else {
+			return 0, false
+		}
+	}
+
+	if !isConditionOnly(status) {
+		return 0, false
+	}
+	return status, true
+}

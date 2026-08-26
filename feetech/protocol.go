@@ -53,6 +53,44 @@ const (
 	ErrInstruction StatusError = 1 << 6
 )
 
+// Flag groups. The split matters: it decides whether a response payload that
+// arrived alongside a flag can be used.
+//
+// conditionFlags describe the servo's physical state. The servo understood the
+// request and answered it; the flag is a separate report about the motor.
+// Verified on hardware 2026-08-25 (STS3215): under ErrOverload the payload was
+// live and correct across 440 samples, and load reported the firmware's
+// post-trip protection torque exactly. See
+// .plans/2026-08-25-status-tolerant-reads.md.
+//
+// Everything else — the request-rejection flags ErrRange, ErrChecksum and
+// ErrInstruction, plus the undefined bit 7 — means the servo did not accept the
+// request, so whatever came back is not an answer to the question asked and must
+// not be decoded. Testing "outside conditionFlags" rather than listing the
+// request flags keeps unknown bits on the conservative side.
+const conditionFlags = ErrVoltage | ErrAngleLimit | ErrOverheat | ErrOverload
+
+// isConditionOnly reports whether s carries condition flags and nothing else.
+// Both splitStatus and ConditionStatus route through this so they can never
+// disagree about whether a payload is trustworthy.
+func isConditionOnly(s StatusError) bool {
+	return s != 0 && s&^conditionFlags == 0
+}
+
+// splitStatus decides what a response status byte means for the caller:
+// whether the payload that arrived with it is usable, and what error (if any)
+// to report. A condition flag yields BOTH a usable payload and an error — the
+// caller decides which it cares about.
+func splitStatus(s StatusError) (payloadValid bool, err error) {
+	if s == 0 {
+		return true, nil
+	}
+	if !isConditionOnly(s) {
+		return false, s
+	}
+	return true, s
+}
+
 func (e StatusError) Error() string {
 	if e == 0 {
 		return "no error"
