@@ -506,11 +506,16 @@ func (b *Bus) readRegisterLocked(ctx context.Context, id, address, length byte) 
 		return nil, fmt.Errorf("wrong servo ID in response: expected %d, got %d", id, resp.ID)
 	}
 
-	if resp.Error.HasError() {
-		return nil, resp.Error
+	// A condition flag (overload/overheat/voltage/angle limit) describes the
+	// motor, not the validity of the response: return the payload AND the flag
+	// and let the caller decide. Callers that check `if err != nil` are
+	// unaffected. See splitStatus.
+	payloadValid, statusErr := splitStatus(resp.Error)
+	if !payloadValid {
+		return nil, statusErr
 	}
 
-	return resp.Parameters, nil
+	return resp.Parameters, statusErr
 }
 
 func (b *Bus) writeRegisterLocked(ctx context.Context, id, address byte, data []byte) error {

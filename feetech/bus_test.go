@@ -344,3 +344,95 @@ func TestBus_ContextCancellation(t *testing.T) {
 		t.Error("expected context cancellation error")
 	}
 }
+
+// readReplyPacket builds a read response from `id` carrying `data` with the
+// given status flags: FF FF id len status data... chk, where len = len(data)+2.
+func readReplyPacket(id byte, status byte, data ...byte) []byte {
+	length := byte(len(data) + 2)
+	pkt := []byte{0xFF, 0xFF, id, length, status}
+	pkt = append(pkt, data...)
+	sum := id + length + status
+	for _, b := range data {
+		sum += b
+	}
+	return append(pkt, ^sum)
+}
+
+func TestReadRegister_ReturnsPayloadWithConditionFlag(t *testing.T) {
+	mock := &transports.MockTransport{}
+	// Captured from hardware: servo 6 overloaded, present_position = 2221.
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: readReplyPacket(6, byte(ErrOverload), 0xAD, 0x08)},
+		},
+	}
+
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	data, err := bus.ReadRegister(context.Background(), 6, RegPresentPosition.Address, 2)
+
+	if err == nil {
+		t.Fatal("expected the overload flag to still be reported as an error")
+	}
+	flags, ok := ConditionStatus(err)
+	if !ok || flags != ErrOverload {
+		t.Fatalf("ConditionStatus: got (%v, %v), want (ErrOverload, true)", flags, ok)
+	}
+	if len(data) != 2 || data[0] != 0xAD || data[1] != 0x08 {
+		t.Fatalf("payload discarded or wrong: got % X, want AD 08", data)
+	}
+}
+
+func TestReadRegister_DiscardsPayloadOnRequestFlag(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: readReplyPacket(6, byte(ErrChecksum), 0xAD, 0x08)},
+		},
+	}
+
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	data, err := bus.ReadRegister(context.Background(), 6, RegPresentPosition.Address, 2)
+
+	if err == nil {
+		t.Fatal("expected a checksum flag to be an error")
+	}
+	if data != nil {
+		t.Fatalf("payload must be discarded on a request flag: got % X", data)
+	}
+	if _, ok := ConditionStatus(err); ok {
+		t.Error("ConditionStatus must not vouch for data behind a checksum flag")
+	}
+}
+
+func TestReadRegister_CleanReadUnchanged(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: readReplyPacket(6, 0x00, 0xAD, 0x08)},
+		},
+	}
+
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	data, err := bus.ReadRegister(context.Background(), 6, RegPresentPosition.Address, 2)
+	if err != nil {
+		t.Fatalf("clean read must not error: %v", err)
+	}
+	if len(data) != 2 {
+		t.Fatalf("got % X, want 2 bytes", data)
+	}
+}
