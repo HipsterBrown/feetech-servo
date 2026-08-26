@@ -97,7 +97,7 @@ func splitStatus(s StatusError) (payloadValid bool, err error) {
 	if s == 0 {
 		return true, nil
 	}
-	if !isConditionOnly(s) {
+	if isRejection(s) {
 		return false, s
 	}
 	return true, s
