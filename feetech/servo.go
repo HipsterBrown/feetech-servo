@@ -1,6 +1,7 @@
 package feetech
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -67,7 +68,7 @@ func (s *Servo) DetectModel(ctx context.Context) error {
 // Position reads the current position.
 func (s *Servo) Position(ctx context.Context) (int, error) {
 	data, err := s.bus.ReadRegister(ctx, s.id, RegPresentPosition.Address, int(RegPresentPosition.Size))
-	if data == nil {
+	if len(data) == 0 {
 		return 0, err
 	}
 	// err may be a non-nil condition flag here; the value is still valid.
@@ -174,7 +175,7 @@ func (s *Servo) SetGoal(ctx context.Context, g GoalRequest) error {
 // Returns a signed value; negative indicates reverse direction.
 func (s *Servo) Velocity(ctx context.Context) (int, error) {
 	data, err := s.bus.ReadRegister(ctx, s.id, RegPresentVelocity.Address, int(RegPresentVelocity.Size))
-	if data == nil {
+	if len(data) == 0 {
 		return 0, err
 	}
 
@@ -235,7 +236,7 @@ func (s *Servo) Moving(ctx context.Context) (bool, error) {
 // Returns a signed value; negative indicates load in reverse direction.
 func (s *Servo) Load(ctx context.Context) (int, error) {
 	data, err := s.bus.ReadRegister(ctx, s.id, RegPresentLoad.Address, int(RegPresentLoad.Size))
-	if data == nil {
+	if len(data) == 0 {
 		return 0, err
 	}
 
@@ -281,20 +282,16 @@ func (s *Servo) SetOperatingMode(ctx context.Context, mode OperatingMode) error 
 // PositionLimits reads the min and max position limits.
 func (s *Servo) PositionLimits(ctx context.Context) (min, max int, err error) {
 	minData, minErr := s.bus.ReadRegister(ctx, s.id, RegMinAngleLimit.Address, 2)
-	if minData == nil {
+	if len(minData) == 0 {
 		return 0, 0, minErr
 	}
 
 	maxData, maxErr := s.bus.ReadRegister(ctx, s.id, RegMaxAngleLimit.Address, 2)
-	if maxData == nil {
+	if len(maxData) == 0 {
 		return 0, 0, maxErr
 	}
 
-	if minErr != nil {
-		err = minErr
-	} else {
-		err = maxErr
-	}
+	err = cmp.Or(minErr, maxErr)
 
 	proto := s.bus.Protocol()
 	return int(proto.DecodeWord(minData)), int(proto.DecodeWord(maxData)), err
