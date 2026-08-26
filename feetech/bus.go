@@ -148,13 +148,16 @@ func (b *Bus) Ping(ctx context.Context, id int) (int, error) {
 	// Now read model number
 	modelData, err := b.readRegisterLocked(ctx, byte(id), RegModelNumber.Address, byte(RegModelNumber.Size))
 	if modelData == nil {
+		if err == nil {
+			err = ErrInvalidPacket
+		}
 		return 0, &ServoError{ID: id, Op: "read model", Err: err}
 	}
-	if pingStatus == nil {
-		pingStatus = err
-	}
-	if status, ok := ConditionStatus(pingStatus); ok {
-		return int(b.protocol.DecodeWord(modelData)), &ServoError{ID: id, Op: "ping", Status: status}
+	// Report every condition flag either read raised, not just one of them.
+	pingFlags, _ := ConditionStatus(pingStatus)
+	modelFlags, _ := ConditionStatus(err)
+	if flags := pingFlags | modelFlags; flags != 0 {
+		return int(b.protocol.DecodeWord(modelData)), &ServoError{ID: id, Op: "ping", Status: flags}
 	}
 	return int(b.protocol.DecodeWord(modelData)), nil
 }

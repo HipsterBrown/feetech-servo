@@ -181,3 +181,31 @@ func TestScan_IncludesOverloadedServo(t *testing.T) {
 		t.Errorf("Status: got %v, want ErrOverload", found[0].Status)
 	}
 }
+
+// TestScan_SkipsRequestRejectionFlag guards against a plausible future
+// "simplification" of the Scan filter (e.g. only checking IsNoResponse):
+// a request-rejection flag (range/checksum/instruction) on the ping itself
+// means the servo never answered the question, so it must not enter
+// discovery with a zero ModelNumber.
+func TestScan_SkipsRequestRejectionFlag(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: errPacket(1, byte(ErrRange))},
+		},
+	}
+
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	found, err := bus.Scan(context.Background(), 1, 1)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(found) != 0 {
+		t.Fatalf("a servo that rejected the ping request must not be discovered: got %d servos", len(found))
+	}
+}
