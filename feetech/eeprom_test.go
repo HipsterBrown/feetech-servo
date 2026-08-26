@@ -2,6 +2,7 @@ package feetech
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -381,6 +382,120 @@ func TestServo_WriteEEPROM_ToleratesConditionFlagOnUnlock(t *testing.T) {
 	// All three packets should have been sent — the dance was not aborted.
 	if len(mock.WriteData) != 24 {
 		t.Errorf("expected 24 bytes (3 packets), got %d: %X", len(mock.WriteData), mock.WriteData)
+	}
+}
+
+// TestServo_WriteEEPROM_RejectionAbortsUnlock verifies that when the unlock
+// write itself is rejected (a request flag -- checksum/instruction/range, not
+// a condition flag), writeEEPROM aborts immediately: neither the target write
+// nor the relock packet is sent, and the error propagates. Restores coverage
+// of servo.go:446-448 ("abort — no further packets are sent"), which the four
+// Tolerates* tests above no longer exercise because they now script condition
+// flags, which never abort the dance under the new write-tolerant contract.
+func TestServo_WriteEEPROM_RejectionAbortsUnlock(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Send: nil, Reply: errPacket(1, byte(ErrChecksum))}, // unlock rejected
+		},
+	}
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	werr := servo.WriteRegister(context.Background(), "id", []byte{5})
+	if werr == nil {
+		t.Fatal("expected error when unlock is rejected")
+	}
+	if !errors.Is(werr, ErrChecksum) {
+		t.Errorf("expected ErrChecksum in error chain, got: %v", werr)
+	}
+	// Only the unlock packet (8 bytes) should have been sent -- the dance
+	// aborted before the target write or the relock.
+	if len(mock.WriteData) != 8 {
+		t.Errorf("expected 8 bytes (unlock only, dance aborted), got %d: %X", len(mock.WriteData), mock.WriteData)
+	}
+}
+
+// TestServo_WriteEEPROM_RejectionErrors covers the three ways a completed
+// dance (unlock always succeeds) can still return an error under the
+// write-tolerant contract: a rejection flag (checksum/instruction/range) on
+// the target write, on the relock, or on both. In every case the relock
+// packet is still sent -- restoring the "relock is always attempted" pin from
+// servo.go:453 alongside the specific return-value branches at
+// servo.go:458 (both failed -> errors.Join), :460 (write failed only), and
+// :462 (relock failed only). The condition-flag versions of these scenarios
+// no longer error at all post-Task-1, which is what dropped this coverage.
+func TestServo_WriteEEPROM_RejectionErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		writeFlag  StatusError // 0 = clean ack
+		relockFlag StatusError // 0 = clean ack
+		wantFlags  []StatusError
+	}{
+		{
+			name:      "target write rejected, relock clean",
+			writeFlag: ErrChecksum,
+			wantFlags: []StatusError{ErrChecksum},
+		},
+		{
+			name:       "target write clean, relock rejected",
+			relockFlag: ErrChecksum,
+			wantFlags:  []StatusError{ErrChecksum},
+		},
+		{
+			name:       "both target write and relock rejected",
+			writeFlag:  ErrChecksum,
+			relockFlag: ErrInstruction,
+			wantFlags:  []StatusError{ErrChecksum, ErrInstruction},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			writeReply := ackPacket(1)
+			if tt.writeFlag != 0 {
+				writeReply = errPacket(1, byte(tt.writeFlag))
+			}
+			relockReply := ackPacket(1)
+			if tt.relockFlag != 0 {
+				relockReply = errPacket(1, byte(tt.relockFlag))
+			}
+
+			mock := &transports.MockTransport{}
+			mock.Script = &transports.Script{
+				Steps: []transports.Step{
+					{Send: nil, Reply: ackPacket(1)}, // unlock OK
+					{Send: nil, Reply: writeReply},
+					{Send: nil, Reply: relockReply},
+				},
+			}
+			bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+			if err != nil {
+				t.Fatalf("NewBus: %v", err)
+			}
+			defer bus.Close()
+
+			servo := NewServo(bus, 1, nil)
+			werr := servo.WriteRegister(context.Background(), "id", []byte{5})
+			if werr == nil {
+				t.Fatal("expected error")
+			}
+			for _, flag := range tt.wantFlags {
+				if !errors.Is(werr, flag) {
+					t.Errorf("expected %v in error chain, got: %v", flag, werr)
+				}
+			}
+			// The relock is always attempted, even when the target write
+			// failed -- all three packets must have been sent regardless of
+			// which step(s) reported a rejection.
+			if len(mock.WriteData) != 24 {
+				t.Errorf("expected 24 bytes (3 packets), got %d: %X", len(mock.WriteData), mock.WriteData)
+			}
+		})
 	}
 }
 
