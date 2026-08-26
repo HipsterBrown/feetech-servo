@@ -118,6 +118,28 @@ func TestServoGroup_Positions_RequestFlagReturnsNil(t *testing.T) {
 	}
 }
 
+// TestServoGroup_Positions_EmptyGroupReturnsEmptyMap verifies that a group
+// with no servos returns an empty non-nil PositionMap rather than nil, so a
+// caller that writes into the returned map doesn't panic.
+func TestServoGroup_Positions_EmptyGroupReturnsEmptyMap(t *testing.T) {
+	mock := &transports.MockTransport{}
+	bus, _ := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	defer bus.Close()
+
+	g := NewServoGroupByIDs(bus)
+	positions, err := g.Positions(context.Background())
+	if err != nil {
+		t.Fatalf("Positions: %v", err)
+	}
+	if positions == nil {
+		t.Fatal("expected non-nil empty PositionMap, got nil")
+	}
+	if len(positions) != 0 {
+		t.Errorf("expected empty map, got %v", positions)
+	}
+	positions[1] = 100 // must not panic on a nil map
+}
+
 func TestServoGroup_EnableAll_WritesSyncWritePacket(t *testing.T) {
 	mock := &transports.MockTransport{}
 	bus, _ := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})

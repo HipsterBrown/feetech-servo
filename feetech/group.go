@@ -70,7 +70,13 @@ func (g *ServoGroup) ServoByID(id int) *Servo {
 func (g *ServoGroup) Positions(ctx context.Context) (PositionMap, error) {
 	data, err := g.bus.SyncRead(ctx, RegPresentPosition.Address, int(RegPresentPosition.Size), g.ids)
 	if len(data) == 0 {
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
+		// No error and no data means an empty group (SyncRead with zero IDs),
+		// not a failed read — an empty non-nil map, not nil, so a caller that
+		// writes into the result doesn't panic.
+		return PositionMap{}, nil
 	}
 
 	proto := g.bus.Protocol()
@@ -361,7 +367,18 @@ func (g *ServoGroup) ReadRegister(ctx context.Context, registerName string) (map
 	for key, ids := range groups {
 		data, err := g.bus.SyncRead(ctx, key.addr, key.size, ids)
 		if err != nil {
-			return nil, fmt.Errorf("sync read for %q at addr=%d size=%d: %w", registerName, key.addr, key.size, err)
+			wrapped := fmt.Errorf("sync read for %q at addr=%d size=%d: %w", registerName, key.addr, key.size, err)
+			if len(data) == 0 {
+				return nil, wrapped
+			}
+			// ponytail: currently unreachable — only SCS models populate
+			// Model.Registers, and SyncRead rejects SCS outright, so an STS
+			// group always exits above via "no servos in group have
+			// register". Kept so a nil map can't be paired with a condition
+			// flag (ConditionStatus(err) == true) the day an STS model gets
+			// Registers populated; mirrors the Positions fix.
+			maps.Copy(result, data)
+			return result, wrapped
 		}
 
 		// Merge results
