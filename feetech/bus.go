@@ -335,17 +335,8 @@ func (b *Bus) RegWrite(ctx context.Context, id int, address byte, data []byte) e
 		return &ServoError{ID: id, Op: "reg_write", Err: err}
 	}
 
-	// A write has no payload to protect — the only question err answers is
-	// "did the instruction take effect?", and a condition flag (overload,
-	// overheat, voltage, angle limit) means it did: the servo accepted and
-	// executed the instruction, and the flag is a standing motor condition
-	// observable through any read. Verified on hardware 2026-08-26 (STS3215
-	// under load): the sharpest data point is the EEPROM unlock write, whose
-	// ack carried the overload flag yet the servo genuinely unlocked (lock
-	// register read back 0) — every other write that day landed the same way.
-	// Only a request-rejection flag means the servo never accepted the
-	// instruction. Do not "fix" this back to erroring on every flag.
-	if resp.Error.HasError() && !isConditionOnly(resp.Error) {
+	// A write only errors on rejection — see isRejection.
+	if isRejection(resp.Error) {
 		return &ServoError{ID: id, Op: "reg_write", Status: resp.Error}
 	}
 
@@ -588,17 +579,8 @@ func (b *Bus) writeRegisterLocked(ctx context.Context, id, address byte, data []
 		return fmt.Errorf("wrong servo ID in response: expected %d, got %d", id, resp.ID)
 	}
 
-	// A write has no payload to protect — the only question err answers is
-	// "did the instruction take effect?", and a condition flag (overload,
-	// overheat, voltage, angle limit) means it did: the servo accepted and
-	// executed the instruction, and the flag is a standing motor condition
-	// observable through any read. Verified on hardware 2026-08-26 (STS3215
-	// under load): the sharpest data point is the EEPROM unlock write, whose
-	// ack carried the overload flag yet the servo genuinely unlocked (lock
-	// register read back 0) — every other write that day landed the same way.
-	// Only a request-rejection flag means the servo never accepted the
-	// instruction. Do not "fix" this back to erroring on every flag.
-	if resp.Error.HasError() && !isConditionOnly(resp.Error) {
+	// A write only errors on rejection — see isRejection.
+	if isRejection(resp.Error) {
 		return resp.Error
 	}
 

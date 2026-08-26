@@ -54,26 +54,39 @@ const (
 )
 
 // Flag groups. The split matters: it decides whether a response payload that
-// arrived alongside a flag can be used.
+// arrived alongside a flag can be used, and on a write, whether the
+// instruction took effect.
 //
 // conditionFlags describe the servo's physical state. The servo understood the
 // request and answered it; the flag is a separate report about the motor.
 // Verified on hardware 2026-08-25 (STS3215): under ErrOverload the payload was
 // live and correct across 440 samples, and load reported the firmware's
 // post-trip protection torque exactly.
-//
-// Everything else — the request-rejection flags ErrRange, ErrChecksum and
-// ErrInstruction, plus the undefined bit 7 — means the servo did not accept the
-// request, so whatever came back is not an answer to the question asked and must
-// not be decoded. Testing "outside conditionFlags" rather than listing the
-// request flags keeps unknown bits on the conservative side.
 const conditionFlags = ErrVoltage | ErrAngleLimit | ErrOverheat | ErrOverload
+
+// isRejection reports whether s means the servo did not accept the request:
+// a request flag (range, checksum, instruction) or the undefined bit 7.
+// Testing "outside conditionFlags" rather than listing the request flags
+// keeps unknown bits on the conservative side.
+//
+// On a read, isRejection means whatever came back is not an answer to the
+// question asked and must not be decoded. On a write, there is no payload to
+// protect — the only question is whether the instruction took effect, and a
+// condition flag alone means it did. Verified on hardware 2026-08-26
+// (STS3215 under load): the sharpest data point is the EEPROM unlock write,
+// whose ack carried the overload flag yet the servo genuinely unlocked (lock
+// register read back 0) — every other write that day landed the same way
+// despite a flagged ack. Only isRejection means the servo never accepted the
+// instruction; do not "fix" a write call site back to erroring on every flag.
+func isRejection(s StatusError) bool {
+	return s&^conditionFlags != 0
+}
 
 // isConditionOnly reports whether s carries condition flags and nothing else.
 // Both splitStatus and ConditionStatus route through this so they can never
 // disagree about whether a payload is trustworthy.
 func isConditionOnly(s StatusError) bool {
-	return s != 0 && s&^conditionFlags == 0
+	return s != 0 && !isRejection(s)
 }
 
 // splitStatus decides what a response status byte means for the caller:

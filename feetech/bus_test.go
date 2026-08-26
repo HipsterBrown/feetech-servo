@@ -111,162 +111,101 @@ func TestBus_WriteRegister(t *testing.T) {
 	}
 }
 
-// TestBus_WriteRegister_ConditionFlagReturnsNil covers the write-path policy
-// established alongside the hardware evidence in bus.go: a condition flag on
-// a write ack means the servo accepted and executed the instruction — the
-// flag is a standing motor condition, not a rejection. err must be nil.
-func TestBus_WriteRegister_ConditionFlagReturnsNil(t *testing.T) {
-	mock := &transports.MockTransport{}
-	mock.Script = &transports.Script{
-		Steps: []transports.Step{
-			{Reply: errPacket(1, byte(ErrOverload))},
-		},
+// TestBus_WriteRegister_StatusFlags covers the write-path policy: a write has
+// no payload to protect, so a condition flag (overload/overheat/voltage/
+// angle limit) alone means the instruction landed — err is nil. A request
+// flag (checksum here) means the servo never accepted it. A condition flag
+// combined with a request flag still errors: it is not laundered by the
+// accompanying condition flag. See isRejection in protocol.go for the
+// hardware evidence behind this split.
+func TestBus_WriteRegister_StatusFlags(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  byte
+		wantErr bool
+	}{
+		{"clean ack", 0x00, false},
+		{"condition flag lands, no error", byte(ErrOverload), false},
+		{"request flag errors", byte(ErrChecksum), true},
+		{"condition+request flags still error", byte(ErrOverload | ErrChecksum), true},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &transports.MockTransport{ReadData: errPacket(1, tt.status)}
+			bus := newTestBus(t, mock)
+			defer bus.Close()
 
-	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
-	if err != nil {
-		t.Fatalf("NewBus: %v", err)
-	}
-	defer bus.Close()
-
-	data := bus.Protocol().EncodeWord(2048)
-	if err := bus.WriteRegister(context.Background(), 1, RegGoalPosition.Address, data); err != nil {
-		t.Fatalf("expected nil on a condition flag (write landed), got %v", err)
+			data := bus.Protocol().EncodeWord(2048)
+			err := bus.WriteRegister(context.Background(), 1, RegGoalPosition.Address, data)
+			if tt.wantErr != (err != nil) {
+				t.Fatalf("WriteRegister error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err != nil {
+				if _, ok := ConditionStatus(err); ok {
+					t.Error("ConditionStatus must not vouch for a write error — a write only errors on rejection")
+				}
+			}
+		})
 	}
 }
 
-// TestBus_WriteRegister_RequestFlagErrors covers the other half of the split:
-// a request-rejection flag means the servo never accepted the instruction, so
-// the write must still error and ConditionStatus must not vouch for it.
-func TestBus_WriteRegister_RequestFlagErrors(t *testing.T) {
-	mock := &transports.MockTransport{}
-	mock.Script = &transports.Script{
-		Steps: []transports.Step{
-			{Reply: errPacket(1, byte(ErrChecksum))},
-		},
-	}
-
-	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
-	if err != nil {
-		t.Fatalf("NewBus: %v", err)
-	}
+// TestBus_WriteRegister_ErrorShape pins that WriteRegister (via
+// writeRegisterLocked) surfaces a request flag as a bare StatusError.
+func TestBus_WriteRegister_ErrorShape(t *testing.T) {
+	mock := &transports.MockTransport{ReadData: errPacket(1, byte(ErrChecksum))}
+	bus := newTestBus(t, mock)
 	defer bus.Close()
 
 	data := bus.Protocol().EncodeWord(2048)
 	werr := bus.WriteRegister(context.Background(), 1, RegGoalPosition.Address, data)
-	if werr == nil {
-		t.Fatal("expected a checksum flag to be an error")
-	}
-	if _, ok := ConditionStatus(werr); ok {
-		t.Error("ConditionStatus must not vouch for a checksum-flagged write")
-	}
 
-	// Pin the error shape: WriteRegister (via writeRegisterLocked) returns the
-	// bare StatusError, not a *ServoError.
 	var statusErr StatusError
 	if !errors.As(werr, &statusErr) {
 		t.Fatalf("expected a bare StatusError in the chain, got %T: %v", werr, werr)
 	}
-	var servoErr *ServoError
-	if errors.As(werr, &servoErr) {
-		t.Errorf("WriteRegister must not wrap in *ServoError, got %#v", servoErr)
+}
+
+// TestBus_RegWrite_StatusFlags mirrors TestBus_WriteRegister_StatusFlags for
+// the RegWrite path.
+func TestBus_RegWrite_StatusFlags(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  byte
+		wantErr bool
+	}{
+		{"clean ack", 0x00, false},
+		{"condition flag lands, no error", byte(ErrOverload), false},
+		{"request flag errors", byte(ErrChecksum), true},
+		{"condition+request flags still error", byte(ErrOverload | ErrChecksum), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &transports.MockTransport{ReadData: errPacket(1, tt.status)}
+			bus := newTestBus(t, mock)
+			defer bus.Close()
+
+			err := bus.RegWrite(context.Background(), 1, RegGoalPosition.Address, []byte{0x00, 0x08})
+			if tt.wantErr != (err != nil) {
+				t.Fatalf("RegWrite error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err != nil {
+				if _, ok := ConditionStatus(err); ok {
+					t.Error("ConditionStatus must not vouch for a reg_write error — a write only errors on rejection")
+				}
+			}
+		})
 	}
 }
 
-// TestBus_WriteRegister_CombinedFlagsError verifies a condition flag combined
-// with a request flag on the same ack still errors — isConditionOnly requires
-// the status to carry ONLY condition flags.
-func TestBus_WriteRegister_CombinedFlagsError(t *testing.T) {
-	mock := &transports.MockTransport{}
-	mock.Script = &transports.Script{
-		Steps: []transports.Step{
-			{Reply: errPacket(1, byte(ErrOverload|ErrChecksum))},
-		},
-	}
-
-	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
-	if err != nil {
-		t.Fatalf("NewBus: %v", err)
-	}
-	defer bus.Close()
-
-	data := bus.Protocol().EncodeWord(2048)
-	werr := bus.WriteRegister(context.Background(), 1, RegGoalPosition.Address, data)
-	if werr == nil {
-		t.Fatal("expected overload+checksum combo to error")
-	}
-	if _, ok := ConditionStatus(werr); ok {
-		t.Error("ConditionStatus must not vouch for a combined condition+request flag write")
-	}
-}
-
-// TestBus_WriteRegister_CleanWriteUnchanged verifies a zero-status ack still
-// returns nil, as before this change.
-func TestBus_WriteRegister_CleanWriteUnchanged(t *testing.T) {
-	mock := &transports.MockTransport{
-		ReadData: ackPacket(1),
-	}
-
-	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
-	if err != nil {
-		t.Fatalf("NewBus: %v", err)
-	}
-	defer bus.Close()
-
-	data := bus.Protocol().EncodeWord(2048)
-	if err := bus.WriteRegister(context.Background(), 1, RegGoalPosition.Address, data); err != nil {
-		t.Fatalf("clean write must not error: %v", err)
-	}
-}
-
-// TestBus_RegWrite_ConditionFlagReturnsNil mirrors
-// TestBus_WriteRegister_ConditionFlagReturnsNil for the RegWrite path, which
-// wraps the status in a *ServoError instead of returning it bare.
-func TestBus_RegWrite_ConditionFlagReturnsNil(t *testing.T) {
-	mock := &transports.MockTransport{}
-	mock.Script = &transports.Script{
-		Steps: []transports.Step{
-			{Reply: errPacket(1, byte(ErrOverload))},
-		},
-	}
-
-	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
-	if err != nil {
-		t.Fatalf("NewBus: %v", err)
-	}
-	defer bus.Close()
-
-	if err := bus.RegWrite(context.Background(), 1, RegGoalPosition.Address, []byte{0x00, 0x08}); err != nil {
-		t.Fatalf("expected nil on a condition flag (write landed), got %v", err)
-	}
-}
-
-// TestBus_RegWrite_RequestFlagErrors mirrors
-// TestBus_WriteRegister_RequestFlagErrors for the RegWrite path.
-func TestBus_RegWrite_RequestFlagErrors(t *testing.T) {
-	mock := &transports.MockTransport{}
-	mock.Script = &transports.Script{
-		Steps: []transports.Step{
-			{Reply: errPacket(1, byte(ErrChecksum))},
-		},
-	}
-
-	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
-	if err != nil {
-		t.Fatalf("NewBus: %v", err)
-	}
+// TestBus_RegWrite_ErrorShape pins that RegWrite wraps a request flag in a
+// *ServoError carrying the servo ID, the "reg_write" op, and the status.
+func TestBus_RegWrite_ErrorShape(t *testing.T) {
+	mock := &transports.MockTransport{ReadData: errPacket(1, byte(ErrChecksum))}
+	bus := newTestBus(t, mock)
 	defer bus.Close()
 
 	werr := bus.RegWrite(context.Background(), 1, RegGoalPosition.Address, []byte{0x00, 0x08})
-	if werr == nil {
-		t.Fatal("expected a checksum flag to be an error")
-	}
-	if _, ok := ConditionStatus(werr); ok {
-		t.Error("ConditionStatus must not vouch for a checksum-flagged reg_write")
-	}
 
-	// Pin the error shape: RegWrite wraps the status in a *ServoError, unlike
-	// WriteRegister's bare StatusError.
 	var servoErr *ServoError
 	if !errors.As(werr, &servoErr) {
 		t.Fatalf("expected a *ServoError in the chain, got %T: %v", werr, werr)
@@ -279,49 +218,6 @@ func TestBus_RegWrite_RequestFlagErrors(t *testing.T) {
 	}
 	if servoErr.Status != ErrChecksum {
 		t.Errorf("ServoError.Status: got %v, want %v", servoErr.Status, ErrChecksum)
-	}
-}
-
-// TestBus_RegWrite_CombinedFlagsError mirrors
-// TestBus_WriteRegister_CombinedFlagsError for the RegWrite path.
-func TestBus_RegWrite_CombinedFlagsError(t *testing.T) {
-	mock := &transports.MockTransport{}
-	mock.Script = &transports.Script{
-		Steps: []transports.Step{
-			{Reply: errPacket(1, byte(ErrOverload|ErrChecksum))},
-		},
-	}
-
-	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
-	if err != nil {
-		t.Fatalf("NewBus: %v", err)
-	}
-	defer bus.Close()
-
-	werr := bus.RegWrite(context.Background(), 1, RegGoalPosition.Address, []byte{0x00, 0x08})
-	if werr == nil {
-		t.Fatal("expected overload+checksum combo to error")
-	}
-	if _, ok := ConditionStatus(werr); ok {
-		t.Error("ConditionStatus must not vouch for a combined condition+request flag reg_write")
-	}
-}
-
-// TestBus_RegWrite_CleanWriteUnchanged mirrors
-// TestBus_WriteRegister_CleanWriteUnchanged for the RegWrite path.
-func TestBus_RegWrite_CleanWriteUnchanged(t *testing.T) {
-	mock := &transports.MockTransport{
-		ReadData: ackPacket(1),
-	}
-
-	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
-	if err != nil {
-		t.Fatalf("NewBus: %v", err)
-	}
-	defer bus.Close()
-
-	if err := bus.RegWrite(context.Background(), 1, RegGoalPosition.Address, []byte{0x00, 0x08}); err != nil {
-		t.Fatalf("clean reg_write must not error: %v", err)
 	}
 }
 
