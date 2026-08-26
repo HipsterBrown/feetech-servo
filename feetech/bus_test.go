@@ -160,6 +160,17 @@ func TestBus_WriteRegister_RequestFlagErrors(t *testing.T) {
 	if _, ok := ConditionStatus(werr); ok {
 		t.Error("ConditionStatus must not vouch for a checksum-flagged write")
 	}
+
+	// Pin the error shape: WriteRegister (via writeRegisterLocked) returns the
+	// bare StatusError, not a *ServoError.
+	var statusErr StatusError
+	if !errors.As(werr, &statusErr) {
+		t.Fatalf("expected a bare StatusError in the chain, got %T: %v", werr, werr)
+	}
+	var servoErr *ServoError
+	if errors.As(werr, &servoErr) {
+		t.Errorf("WriteRegister must not wrap in *ServoError, got %#v", servoErr)
+	}
 }
 
 // TestBus_WriteRegister_CombinedFlagsError verifies a condition flag combined
@@ -252,6 +263,22 @@ func TestBus_RegWrite_RequestFlagErrors(t *testing.T) {
 	}
 	if _, ok := ConditionStatus(werr); ok {
 		t.Error("ConditionStatus must not vouch for a checksum-flagged reg_write")
+	}
+
+	// Pin the error shape: RegWrite wraps the status in a *ServoError, unlike
+	// WriteRegister's bare StatusError.
+	var servoErr *ServoError
+	if !errors.As(werr, &servoErr) {
+		t.Fatalf("expected a *ServoError in the chain, got %T: %v", werr, werr)
+	}
+	if servoErr.ID != 1 {
+		t.Errorf("ServoError.ID: got %d, want 1", servoErr.ID)
+	}
+	if servoErr.Op != "reg_write" {
+		t.Errorf("ServoError.Op: got %q, want %q", servoErr.Op, "reg_write")
+	}
+	if servoErr.Status != ErrChecksum {
+		t.Errorf("ServoError.Status: got %v, want %v", servoErr.Status, ErrChecksum)
 	}
 }
 
