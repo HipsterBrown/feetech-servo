@@ -774,6 +774,38 @@ if err != nil {
 }
 ```
 
+### Status-Tolerant Reads
+
+A servo response carries a status byte with two kinds of flags, and they are
+handled differently:
+
+- **Condition flags** (`ErrVoltage`, `ErrAngleLimit`, `ErrOverheat`,
+  `ErrOverload`) describe the motor's physical state. The servo understood
+  the request and answered it, so read accessors return the decoded value
+  **and** the error.
+- **Request flags** (`ErrRange`, `ErrChecksum`, `ErrInstruction`, plus the
+  undefined bit 7) mean the servo rejected the request. Only an error is
+  returned; there is no payload to trust.
+
+Use `feetech.ConditionStatus` to tell them apart and safely use the value:
+
+```go
+pos, err := servo.Position(ctx)
+if flags, ok := feetech.ConditionStatus(err); ok {
+    // pos is valid — the servo answered. The flag describes the motor.
+    log.Printf("position %d valid, but servo reports %v", pos, flags)
+} else if err != nil {
+    return err
+}
+```
+
+Callers that only check `if err != nil { return err }` are unaffected — they
+just treat a condition flag as an error like any other, same as before.
+
+This also changes discovery: an overloaded or overheating servo used to
+vanish from `Discover`/`Scan` entirely. It now still appears, with
+`FoundServo.Status` set to the reported condition flags.
+
 ## Thread Safety
 
 All operations are thread-safe and can be called from multiple goroutines:

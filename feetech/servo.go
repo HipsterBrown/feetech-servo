@@ -8,6 +8,10 @@ import (
 )
 
 // Servo provides a high-level interface for controlling a single servo.
+//
+// Read accessors return the decoded value alongside a non-nil error when the
+// servo reports a condition flag (overload, overheat, voltage, angle limit);
+// see ConditionStatus. Callers that treat any error as fatal are unaffected.
 type Servo struct {
 	bus   *Bus
 	id    int
@@ -71,7 +75,6 @@ func (s *Servo) Position(ctx context.Context) (int, error) {
 	if len(data) == 0 {
 		return 0, err
 	}
-	// err may be a non-nil condition flag here; the value is still valid.
 	return decodePositionWord(s.bus.Protocol(), data), err
 }
 
