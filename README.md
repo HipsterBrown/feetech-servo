@@ -814,9 +814,6 @@ vanish from `Discover`/`Scan` entirely. It now still appears, with
 
 ### Status-Tolerant Writes
 
-A write has no payload, so its contract is simpler than a read's: `err`
-answers only one question, "did the instruction take effect?"
-
 - **Condition flags** on a write ack still mean the servo accepted and
   executed the instruction, so `WriteRegister`, `RegWrite`, and the `Servo`
   setters built on them (`SetPosition`, `SetGoal`, ...) return **nil**.
@@ -839,18 +836,22 @@ if err != nil {
 `ConditionStatus(err)` never returns `ok == true` for a write error — a
 non-nil write error means rejection, full stop.
 
-This is the deliberate asymmetry with reads, in one place: a read has a
-payload whose validity is a genuine question, so it returns both the data
-and the flag. A write has nothing to validate, so `err` only has one job.
-Making a write error on a condition flag too would give `err` two different
-meanings depending on which register class the caller happened to touch.
-The accepted cost: a caller that only ever writes — a position control loop,
-say — no longer learns from the write path that the motor is overheating;
-read occasionally if you need that signal.
+This is the deliberate asymmetry with reads: a read has a payload whose
+validity is a genuine question, so it returns both the data and the flag. A
+write has nothing to validate, so `err` only answers one question — "did it
+take effect?" Making a write error on a condition flag too would give `err`
+two different meanings depending on which register class the caller happened
+to touch. The accepted cost: a caller that only ever writes — a position
+control loop, say — no longer learns from the write path that the motor is
+overheating; read occasionally if you need that signal.
 
-`Bus.SyncWrite` (and `ServoGroup.WriteRegister`/`SetGoals` built on it) sends
-as a broadcast and never reads a response, so this contract doesn't apply to
-it — it can only fail if sending the packet itself fails.
+`Bus.SyncWrite` never reads an ack, so the status contract above doesn't
+apply to it — it can still fail locally (closed bus, bad servo ID, a
+data-length mismatch) or on send. The same is true for
+`ServoGroup.WriteRegister` and `SetGoals`, which call it.
+`ServoGroup.RegWritePositions` is the exception to that exception: it calls
+`Bus.RegWrite` per servo, so the write contract above (nil on a condition
+flag, error only on rejection) does apply to it.
 
 ## Thread Safety
 
