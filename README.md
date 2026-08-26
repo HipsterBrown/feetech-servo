@@ -95,10 +95,10 @@ func (b *Bus) Scan(ctx context.Context, startID, endID int) ([]FoundServo, error
 func (b *Bus) Action(ctx context.Context) error
 
 // Low-level operations
-func (b *Bus) Read(ctx context.Context, id int, address byte, length byte) ([]byte, error)
-func (b *Bus) Write(ctx context.Context, id int, address byte, data []byte) error
-func (b *Bus) SyncRead(ctx context.Context, address, size byte, ids []int) (map[int][]byte, error)
-func (b *Bus) SyncWrite(ctx context.Context, address, size byte, data map[int][]byte) error
+func (b *Bus) ReadRegister(ctx context.Context, id int, address byte, length int) ([]byte, error)
+func (b *Bus) WriteRegister(ctx context.Context, id int, address byte, data []byte) error
+func (b *Bus) SyncRead(ctx context.Context, address byte, dataLen int, ids []int) (map[int][]byte, error)
+func (b *Bus) SyncWrite(ctx context.Context, address byte, dataLen int, servoData map[int][]byte) error
 func (b *Bus) RegWrite(ctx context.Context, id int, address byte, data []byte) error
 
 // Close the bus and release resources
@@ -111,7 +111,7 @@ The `Servo` type represents an individual servo motor:
 
 ```go
 // Create a new servo
-func NewServo(bus *Bus, id int, model *ServoModel) *Servo
+func NewServo(bus *Bus, id int, model *Model) *Servo
 
 // Basic operations
 func (s *Servo) Ping(ctx context.Context) (int, error)
@@ -136,11 +136,11 @@ func (s *Servo) Voltage(ctx context.Context) (int, error)
 func (s *Servo) Temperature(ctx context.Context) (int, error)
 
 // Operating mode
-func (s *Servo) OperatingMode(ctx context.Context) (byte, error)
-func (s *Servo) SetOperatingMode(ctx context.Context, mode byte) error
+func (s *Servo) OperatingMode(ctx context.Context) (OperatingMode, error)
+func (s *Servo) SetOperatingMode(ctx context.Context, mode OperatingMode) error
 
 // Model information
-func (s *Servo) Model() *ServoModel
+func (s *Servo) Model() *Model
 func (s *Servo) ID() int
 
 // Configuration (EEPROM writes)
@@ -195,7 +195,7 @@ func (g *ServoGroup) ServoByID(id int) *Servo
 type BusConfig struct {
     Port      string               // Serial port path (e.g., "/dev/ttyUSB0")
     BaudRate  int                  // Communication speed (default: 1000000)
-    Protocol  int                  // Protocol: ProtocolSTS or ProtocolSCS
+    Protocol  ProtocolVersion      // Protocol: ProtocolSTS or ProtocolSCS
     Timeout   time.Duration        // Communication timeout (default: 1 second)
     Transport Transport            // Optional: custom transport (for testing)
 }
@@ -802,6 +802,14 @@ if flags, ok := feetech.ConditionStatus(err); ok {
 
 Callers that only check `if err != nil { return err }` are unaffected — they
 just treat a condition flag as an error like any other, same as before.
+
+This value-plus-error contract applies only to the single-servo read path
+(`Bus.ReadRegister` and the `Servo` accessors built on it, like `Position`).
+`Bus.SyncRead` and `ServoGroup.Positions` still discard the entire response
+and return `nil` on any status flag, condition or request. Do not use
+`ConditionStatus` to vouch for their results — it will happily report
+`ok == true` for the `ServoError` a sync read returns even though the map
+that came back is `nil`.
 
 This also changes discovery: an overloaded or overheating servo used to
 vanish from `Discover`/`Scan` entirely. It now still appears, with
