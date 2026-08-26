@@ -69,7 +69,7 @@ func (g *ServoGroup) ServoByID(id int) *Servo {
 // Returns a map of servo ID to position value.
 func (g *ServoGroup) Positions(ctx context.Context) (PositionMap, error) {
 	data, err := g.bus.SyncRead(ctx, RegPresentPosition.Address, int(RegPresentPosition.Size), g.ids)
-	if err != nil {
+	if len(data) == 0 {
 		return nil, err
 	}
 
@@ -79,7 +79,7 @@ func (g *ServoGroup) Positions(ctx context.Context) (PositionMap, error) {
 		positions[id] = decodePositionWord(proto, d)
 	}
 
-	return positions, nil
+	return positions, err
 }
 
 // SetPositions writes positions to servos using sync write.

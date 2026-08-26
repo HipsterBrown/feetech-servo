@@ -191,6 +191,75 @@ func TestBus_SyncRead_SCSUnsupported(t *testing.T) {
 	}
 }
 
+// TestBus_SyncRead_ConditionFlagKeepsAllResults verifies that a condition flag
+// (servo answered, motor is unhappy) on one servo in a multi-servo sync read
+// keeps every servo's payload in the result map, with an error whose
+// ConditionStatus reports the flag.
+func TestBus_SyncRead_ConditionFlagKeepsAllResults(t *testing.T) {
+	mock := &transports.MockTransport{
+		ReadData: append(
+			readReplyPacket(1, byte(ErrOverload), 0x00, 0x08), // servo 1: flagged, position 2048
+			readReplyPacket(2, 0x00, 0x00, 0x04)...,           // servo 2: clean, position 1024
+		),
+	}
+	bus, _ := NewBus(BusConfig{
+		Transport: mock,
+		Protocol:  ProtocolSTS,
+		Timeout:   100 * time.Millisecond,
+	})
+	defer bus.Close()
+
+	data, err := bus.SyncRead(context.Background(), RegPresentPosition.Address, 2, []int{1, 2})
+	if len(data) != 2 {
+		t.Fatalf("got %d results, want 2 (data: %v, err: %v)", len(data), data, err)
+	}
+
+	proto := bus.Protocol()
+	if pos := proto.DecodeWord(data[1]); pos != 2048 {
+		t.Errorf("servo 1 position: got %d, want 2048", pos)
+	}
+	if pos := proto.DecodeWord(data[2]); pos != 1024 {
+		t.Errorf("servo 2 position: got %d, want 1024", pos)
+	}
+
+	flags, ok := ConditionStatus(err)
+	if !ok {
+		t.Fatalf("ConditionStatus ok = false, want true for err %v", err)
+	}
+	if flags != ErrOverload {
+		t.Errorf("flags = %v, want ErrOverload", flags)
+	}
+}
+
+// TestBus_SyncRead_RequestFlagDiscardsResponse verifies that a request-rejection
+// flag (servo didn't accept the request) on any servo discards the whole
+// response: nil map, and ConditionStatus reports ok == false.
+func TestBus_SyncRead_RequestFlagDiscardsResponse(t *testing.T) {
+	mock := &transports.MockTransport{
+		ReadData: append(
+			readReplyPacket(1, byte(ErrChecksum), 0x00, 0x08),
+			readReplyPacket(2, 0x00, 0x00, 0x04)...,
+		),
+	}
+	bus, _ := NewBus(BusConfig{
+		Transport: mock,
+		Protocol:  ProtocolSTS,
+		Timeout:   100 * time.Millisecond,
+	})
+	defer bus.Close()
+
+	data, err := bus.SyncRead(context.Background(), RegPresentPosition.Address, 2, []int{1, 2})
+	if data != nil {
+		t.Errorf("expected nil map for request-rejection flag, got %v", data)
+	}
+	if err == nil {
+		t.Fatal("expected error for request-rejection flag")
+	}
+	if _, ok := ConditionStatus(err); ok {
+		t.Errorf("ConditionStatus ok = true, want false for request-rejection flag")
+	}
+}
+
 func TestBus_InvalidID(t *testing.T) {
 	mock := &transports.MockTransport{}
 	bus, _ := NewBus(BusConfig{Transport: mock})

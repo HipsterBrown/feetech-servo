@@ -59,6 +59,65 @@ func TestServoGroup_Positions_DecodesSyncReadResponses(t *testing.T) {
 	}
 }
 
+// TestServoGroup_Positions_ConditionFlagKeepsAllPositions verifies that a
+// condition flag on one servo doesn't blank out the whole group read: every
+// servo's position is still returned, alongside an error ConditionStatus
+// recognizes.
+func TestServoGroup_Positions_ConditionFlagKeepsAllPositions(t *testing.T) {
+	mock := &transports.MockTransport{
+		ReadData: append(
+			readReplyPacket(1, byte(ErrOverload), 0x00, 0x08), // servo 1: flagged, position 2048
+			readReplyPacket(2, 0x00, 0x00, 0x04)...,           // servo 2: clean, position 1024
+		),
+	}
+	bus, _ := NewBus(BusConfig{
+		Transport: mock,
+		Protocol:  ProtocolSTS,
+		Timeout:   100 * time.Millisecond,
+	})
+	defer bus.Close()
+
+	g := NewServoGroupByIDs(bus, 1, 2)
+	positions, err := g.Positions(context.Background())
+	if positions[1] != 2048 {
+		t.Errorf("servo 1: got %d want 2048", positions[1])
+	}
+	if positions[2] != 1024 {
+		t.Errorf("servo 2: got %d want 1024", positions[2])
+	}
+	if flags, ok := ConditionStatus(err); !ok || flags != ErrOverload {
+		t.Errorf("ConditionStatus(err) = (%v, %v), want (ErrOverload, true)", flags, ok)
+	}
+}
+
+// TestServoGroup_Positions_RequestFlagReturnsNil verifies that a
+// request-rejection flag still discards the whole result: nil map, and
+// ConditionStatus reports ok == false so callers can't mistake it for a
+// motor-condition report.
+func TestServoGroup_Positions_RequestFlagReturnsNil(t *testing.T) {
+	mock := &transports.MockTransport{
+		ReadData: append(
+			readReplyPacket(1, byte(ErrChecksum), 0x00, 0x08),
+			readReplyPacket(2, 0x00, 0x00, 0x04)...,
+		),
+	}
+	bus, _ := NewBus(BusConfig{
+		Transport: mock,
+		Protocol:  ProtocolSTS,
+		Timeout:   100 * time.Millisecond,
+	})
+	defer bus.Close()
+
+	g := NewServoGroupByIDs(bus, 1, 2)
+	positions, err := g.Positions(context.Background())
+	if positions != nil {
+		t.Errorf("expected nil PositionMap, got %v", positions)
+	}
+	if _, ok := ConditionStatus(err); ok {
+		t.Errorf("ConditionStatus ok = true, want false for request-rejection flag")
+	}
+}
+
 func TestServoGroup_EnableAll_WritesSyncWritePacket(t *testing.T) {
 	mock := &transports.MockTransport{}
 	bus, _ := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})

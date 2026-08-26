@@ -275,13 +275,19 @@ func (b *Bus) SyncRead(ctx context.Context, address byte, dataLen int, ids []int
 		return nil, &CommError{Op: "sync_read", Err: err}
 	}
 
-	// Build result map
+	// Build result map. A request-rejection flag on any single servo discards
+	// the whole response (its payload is meaningless and packet framing past
+	// it can't be trusted either). A condition flag still means the servo
+	// answered, so its payload is kept and the flag is accumulated to report
+	// alongside the rest of the results below.
 	result := make(map[int][]byte, len(packets))
+	var flags StatusError
 	for _, pkt := range packets {
-		if pkt.Error.HasError() {
+		if payloadValid, _ := splitStatus(pkt.Error); !payloadValid {
 			return nil, &ServoError{ID: int(pkt.ID), Op: "sync_read", Status: pkt.Error}
 		}
 		result[int(pkt.ID)] = pkt.Parameters
+		flags |= pkt.Error
 	}
 
 	// Check for missing responses
@@ -289,6 +295,16 @@ func (b *Bus) SyncRead(ctx context.Context, address byte, dataLen int, ids []int
 		if _, ok := result[id]; !ok {
 			return result, &ServoError{ID: id, Op: "sync_read", Err: ErrNoResponse}
 		}
+	}
+
+	// Condition flags came from one or more servos in the group; a single
+	// ServoError.ID can't honestly name "which one". Use BroadcastID, the
+	// protocol's own sentinel for "this addresses every ID in the group"
+	// (already used as the packet ID for sync read/write requests), rather
+	// than inventing a new meaning. ConditionStatus only reads Status, so
+	// callers checking the flags are unaffected either way.
+	if flags != 0 {
+		return result, &ServoError{ID: BroadcastID, Op: "sync_read", Status: flags}
 	}
 
 	return result, nil
