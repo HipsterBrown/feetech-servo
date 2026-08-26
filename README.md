@@ -201,9 +201,10 @@ type BusConfig struct {
 }
 
 type FoundServo struct {
-    ID          int          // Servo ID found on bus
-    ModelNumber int          // Hardware model number
-    Model       *ServoModel  // Model specification (nil if unknown)
+    ID          int         // Servo ID found on bus
+    ModelNumber int         // Hardware model number
+    Model       *Model      // Model specification (nil if unknown)
+    Status      StatusError // Condition flags reported during discovery (0 if clean)
 }
 
 // PositionMap is used for map-based servo control
