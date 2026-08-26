@@ -149,3 +149,35 @@ func TestBus_ReadHonorsContextDeadline(t *testing.T) {
 		t.Errorf("transport read timeout = %v; a 30ms ctx deadline should bound it well under 5s", mock.ReadTimeout)
 	}
 }
+
+func TestScan_IncludesOverloadedServo(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			// ID 1: ping answers with the overload flag set...
+			{Reply: errPacket(1, byte(ErrOverload))},
+			// ...and the follow-up model-number read carries 777 (0x0309) with the flag.
+			{Reply: readReplyPacket(1, byte(ErrOverload), 0x09, 0x03)},
+		},
+	}
+
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	found, err := bus.Scan(context.Background(), 1, 1)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(found) != 1 {
+		t.Fatalf("an overloaded servo must still be discovered: got %d servos", len(found))
+	}
+	if found[0].ModelNumber != 777 {
+		t.Errorf("ModelNumber: got %d, want 777", found[0].ModelNumber)
+	}
+	if found[0].Status != ErrOverload {
+		t.Errorf("Status: got %v, want ErrOverload", found[0].Status)
+	}
+}

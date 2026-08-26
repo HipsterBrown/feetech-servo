@@ -137,16 +137,25 @@ func (b *Bus) Ping(ctx context.Context, id int) (int, error) {
 		return 0, &ServoError{ID: id, Op: "ping", Err: err}
 	}
 
-	if resp.Error.HasError() {
+	// A condition flag means the servo is present and answering — it must not
+	// vanish from discovery. Carry the flag forward; only a request-rejection
+	// flag means this was not a usable answer.
+	pingValid, pingStatus := splitStatus(resp.Error)
+	if !pingValid {
 		return 0, &ServoError{ID: id, Op: "ping", Status: resp.Error}
 	}
 
 	// Now read model number
 	modelData, err := b.readRegisterLocked(ctx, byte(id), RegModelNumber.Address, byte(RegModelNumber.Size))
-	if err != nil {
+	if modelData == nil {
 		return 0, &ServoError{ID: id, Op: "read model", Err: err}
 	}
-
+	if pingStatus == nil {
+		pingStatus = err
+	}
+	if status, ok := ConditionStatus(pingStatus); ok {
+		return int(b.protocol.DecodeWord(modelData)), &ServoError{ID: id, Op: "ping", Status: status}
+	}
 	return int(b.protocol.DecodeWord(modelData)), nil
 }
 
@@ -348,13 +357,15 @@ func (b *Bus) Scan(ctx context.Context, startID, endID int) ([]FoundServo, error
 		}
 
 		modelNum, err := b.pingWithTimeout(ctx, id)
-		if err != nil {
+		status, flagged := ConditionStatus(err)
+		if err != nil && !flagged {
 			continue // No response at this ID
 		}
 
 		f := FoundServo{
 			ID:          id,
 			ModelNumber: modelNum,
+			Status:      status,
 		}
 
 		if model, ok := GetModelByNumber(modelNum); ok {
@@ -458,6 +469,11 @@ type FoundServo struct {
 	ID          int
 	ModelNumber int
 	Model       *Model // May be nil if model is unknown
+	// Status carries any condition flags the servo reported during discovery
+	// (overload, overheat, voltage, angle limit). Zero means a clean ping. A
+	// flagged servo is still reported — it is present on the bus and its model
+	// number is valid; the flag says the motor needs attention.
+	Status StatusError
 }
 
 // Internal methods
