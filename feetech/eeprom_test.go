@@ -2,7 +2,6 @@ package feetech
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -253,14 +252,20 @@ func errPacket(id byte, errFlag byte) []byte {
 	return []byte{0xFF, 0xFF, id, 0x02, errFlag, chk}
 }
 
-// TestServo_WriteEEPROM_RelocksOnWriteError verifies that when the target write
-// fails (servo returns a status error), the re-lock packet is still sent.
-func TestServo_WriteEEPROM_RelocksOnWriteError(t *testing.T) {
+// TestServo_WriteEEPROM_ToleratesConditionFlagOnWrite verifies that when the
+// target write's ack carries a condition flag (overload/overheat/voltage/
+// angle limit), the write is treated as landed — not an error — and the
+// re-lock still runs normally. Renamed from the old
+// TestServo_WriteEEPROM_RelocksOnWriteError, which asserted the pre-Task-1
+// contract (any flag = error). Hardware evidence (see bus.go) showed a
+// condition flag on a write ack does not mean the write was rejected, so this
+// scenario no longer produces an error at all.
+func TestServo_WriteEEPROM_ToleratesConditionFlagOnWrite(t *testing.T) {
 	mock := &transports.MockTransport{}
 	mock.Script = &transports.Script{
 		Steps: []transports.Step{
 			{Send: nil, Reply: ackPacket(1)},                    // unlock OK
-			{Send: nil, Reply: errPacket(1, byte(ErrOverload))}, // write fails
+			{Send: nil, Reply: errPacket(1, byte(ErrOverload))}, // write, condition flag only
 			{Send: nil, Reply: ackPacket(1)},                    // relock OK
 		},
 	}
@@ -272,14 +277,11 @@ func TestServo_WriteEEPROM_RelocksOnWriteError(t *testing.T) {
 
 	servo := NewServo(bus, 1, nil)
 	werr := servo.WriteRegister(context.Background(), "id", []byte{5})
-	if werr == nil {
-		t.Fatal("expected error from write step")
-	}
-	if !errors.Is(werr, ErrOverload) {
-		t.Errorf("expected ErrOverload in chain, got %v", werr)
+	if werr != nil {
+		t.Fatalf("condition flag on write ack must not error: %v", werr)
 	}
 
-	// Verify all three packets were sent (unlock, write attempt, re-lock).
+	// Verify all three packets were sent (unlock, write, re-lock).
 	if len(mock.WriteData) != 24 {
 		t.Errorf("expected 24 bytes (3 packets), got %d: %X", len(mock.WriteData), mock.WriteData)
 	}
@@ -289,15 +291,17 @@ func TestServo_WriteEEPROM_RelocksOnWriteError(t *testing.T) {
 	}
 }
 
-// TestServo_WriteEEPROM_JoinedErrorOnRelockError verifies that when the relock
-// returns an error status, that error surfaces through the returned error.
-func TestServo_WriteEEPROM_JoinedErrorOnRelockError(t *testing.T) {
+// TestServo_WriteEEPROM_ToleratesConditionFlagOnRelock verifies that when the
+// relock ack carries a condition flag, that's tolerated too — the relock
+// landed. Renamed from the old TestServo_WriteEEPROM_JoinedErrorOnRelockError,
+// which asserted the pre-Task-1 contract.
+func TestServo_WriteEEPROM_ToleratesConditionFlagOnRelock(t *testing.T) {
 	mock := &transports.MockTransport{}
 	mock.Script = &transports.Script{
 		Steps: []transports.Step{
 			{Send: nil, Reply: ackPacket(1)},                    // unlock OK
 			{Send: nil, Reply: ackPacket(1)},                    // write OK
-			{Send: nil, Reply: errPacket(1, byte(ErrOverheat))}, // relock fails
+			{Send: nil, Reply: errPacket(1, byte(ErrOverheat))}, // relock, condition flag only
 		},
 	}
 	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
@@ -308,23 +312,26 @@ func TestServo_WriteEEPROM_JoinedErrorOnRelockError(t *testing.T) {
 
 	servo := NewServo(bus, 1, nil)
 	werr := servo.WriteRegister(context.Background(), "id", []byte{5})
-	if werr == nil {
-		t.Fatal("expected error from relock step")
-	}
-	if !errors.Is(werr, ErrOverheat) {
-		t.Errorf("expected ErrOverheat in chain, got %v", werr)
+	if werr != nil {
+		t.Fatalf("condition flag on relock ack must not error: %v", werr)
 	}
 }
 
-// TestServo_WriteEEPROM_BothFailJoined exercises the errors.Join branch where
-// BOTH the write and the re-lock fail.
-func TestServo_WriteEEPROM_BothFailJoined(t *testing.T) {
+// TestServo_WriteEEPROM_ToleratesConditionFlagsOnBothSteps covers write and
+// relock each carrying their own (different) condition flag. Renamed from the
+// old TestServo_WriteEEPROM_BothFailJoined, which exercised the errors.Join
+// branch in writeEEPROM for a "both steps fail" scenario. Under the new
+// write-tolerant contract, a lone condition flag is never a failure, so that
+// scenario can no longer be constructed this way — both steps report nil and
+// errors.Join is never reached. Coverage of the Join branch itself belongs to
+// a genuine (request-flag) failure scenario, which is outside this task.
+func TestServo_WriteEEPROM_ToleratesConditionFlagsOnBothSteps(t *testing.T) {
 	mock := &transports.MockTransport{}
 	mock.Script = &transports.Script{
 		Steps: []transports.Step{
 			{Send: nil, Reply: ackPacket(1)},                    // unlock OK
-			{Send: nil, Reply: errPacket(1, byte(ErrOverload))}, // write fails
-			{Send: nil, Reply: errPacket(1, byte(ErrOverheat))}, // relock fails
+			{Send: nil, Reply: errPacket(1, byte(ErrOverload))}, // write, condition flag only
+			{Send: nil, Reply: errPacket(1, byte(ErrOverheat))}, // relock, condition flag only
 		},
 	}
 	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
@@ -335,15 +342,8 @@ func TestServo_WriteEEPROM_BothFailJoined(t *testing.T) {
 
 	servo := NewServo(bus, 1, nil)
 	werr := servo.WriteRegister(context.Background(), "id", []byte{5})
-	if werr == nil {
-		t.Fatal("expected error")
-	}
-	// errors.Join walks both branches.
-	if !errors.Is(werr, ErrOverload) {
-		t.Errorf("expected ErrOverload (write error) in chain, got %v", werr)
-	}
-	if !errors.Is(werr, ErrOverheat) {
-		t.Errorf("expected ErrOverheat (relock error) in chain, got %v", werr)
+	if werr != nil {
+		t.Fatalf("condition flags on both steps must not error: %v", werr)
 	}
 
 	// All three packets should still have been sent.
@@ -352,13 +352,19 @@ func TestServo_WriteEEPROM_BothFailJoined(t *testing.T) {
 	}
 }
 
-// TestServo_WriteEEPROM_UnlockFailDoesNotWrite verifies that when the unlock
-// itself fails, no further packets are sent and the unlock error is returned.
-func TestServo_WriteEEPROM_UnlockFailDoesNotWrite(t *testing.T) {
+// TestServo_WriteEEPROM_ToleratesConditionFlagOnUnlock verifies that a
+// condition flag on the unlock ack does not abort the dance: the unlock
+// genuinely landed (hardware evidence: the lock register read back 0 despite
+// the flagged ack), so the write and re-lock still proceed. Renamed from the
+// old TestServo_WriteEEPROM_UnlockFailDoesNotWrite, which asserted the
+// pre-Task-1 contract that any flag on the unlock step aborts the dance.
+func TestServo_WriteEEPROM_ToleratesConditionFlagOnUnlock(t *testing.T) {
 	mock := &transports.MockTransport{}
 	mock.Script = &transports.Script{
 		Steps: []transports.Step{
-			{Send: nil, Reply: errPacket(1, byte(ErrOverheat))}, // unlock fails
+			{Send: nil, Reply: errPacket(1, byte(ErrOverheat))}, // unlock, condition flag only
+			{Send: nil, Reply: ackPacket(1)},                    // write OK
+			{Send: nil, Reply: ackPacket(1)},                    // relock OK
 		},
 	}
 	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
@@ -369,15 +375,12 @@ func TestServo_WriteEEPROM_UnlockFailDoesNotWrite(t *testing.T) {
 
 	servo := NewServo(bus, 1, nil)
 	werr := servo.WriteRegister(context.Background(), "id", []byte{5})
-	if werr == nil {
-		t.Fatal("expected unlock error")
+	if werr != nil {
+		t.Fatalf("condition flag on unlock ack must not error: %v", werr)
 	}
-	if !errors.Is(werr, ErrOverheat) {
-		t.Errorf("expected ErrOverheat in chain, got %v", werr)
-	}
-	// Only the unlock packet should have been written.
-	if len(mock.WriteData) != 8 {
-		t.Errorf("expected 8 bytes (1 unlock packet only), got %d: %X", len(mock.WriteData), mock.WriteData)
+	// All three packets should have been sent — the dance was not aborted.
+	if len(mock.WriteData) != 24 {
+		t.Errorf("expected 24 bytes (3 packets), got %d: %X", len(mock.WriteData), mock.WriteData)
 	}
 }
 
