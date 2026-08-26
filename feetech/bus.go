@@ -151,6 +151,13 @@ func (b *Bus) Ping(ctx context.Context, id int) (int, error) {
 }
 
 // ReadRegister reads bytes from a servo register.
+//
+// A servo condition flag (overload, overheat, voltage, angle limit) returns
+// BOTH the payload and a non-nil error: the servo answered, and the flag
+// describes the motor rather than the validity of the data. Callers that treat
+// any error as fatal are unaffected; callers that want the reading anyway
+// should check ConditionStatus(err). Request-rejection flags (checksum,
+// instruction, range) return nil data.
 func (b *Bus) ReadRegister(ctx context.Context, id int, address byte, length int) ([]byte, error) {
 	if err := b.validateID(id); err != nil {
 		return nil, err

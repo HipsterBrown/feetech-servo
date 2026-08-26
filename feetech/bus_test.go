@@ -432,7 +432,7 @@ func TestReadRegister_CleanReadUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("clean read must not error: %v", err)
 	}
-	if len(data) != 2 {
-		t.Fatalf("got % X, want 2 bytes", data)
+	if len(data) != 2 || data[0] != 0xAD || data[1] != 0x08 {
+		t.Fatalf("got % X, want AD 08", data)
 	}
 }
