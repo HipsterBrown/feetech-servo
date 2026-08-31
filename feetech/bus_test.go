@@ -111,6 +111,116 @@ func TestBus_WriteRegister(t *testing.T) {
 	}
 }
 
+// TestBus_WriteRegister_StatusFlags covers the write-path policy: a write has
+// no payload to protect, so a condition flag (overload/overheat/voltage/
+// angle limit) alone means the instruction landed — err is nil. A request
+// flag (checksum here) means the servo never accepted it. A condition flag
+// combined with a request flag still errors: it is not laundered by the
+// accompanying condition flag. See isRejection in protocol.go for the
+// hardware evidence behind this split.
+func TestBus_WriteRegister_StatusFlags(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  byte
+		wantErr bool
+	}{
+		{"clean ack", 0x00, false},
+		{"condition flag lands, no error", byte(ErrOverload), false},
+		{"request flag errors", byte(ErrChecksum), true},
+		{"condition+request flags still error", byte(ErrOverload | ErrChecksum), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &transports.MockTransport{ReadData: errPacket(1, tt.status)}
+			bus := newTestBus(t, mock)
+			defer bus.Close()
+
+			data := bus.Protocol().EncodeWord(2048)
+			err := bus.WriteRegister(context.Background(), 1, RegGoalPosition.Address, data)
+			if tt.wantErr != (err != nil) {
+				t.Fatalf("WriteRegister error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err != nil {
+				if _, ok := ConditionStatus(err); ok {
+					t.Error("ConditionStatus must not vouch for a write error — a write only errors on rejection")
+				}
+			}
+		})
+	}
+}
+
+// TestBus_WriteRegister_ErrorShape pins that WriteRegister (via
+// writeRegisterLocked) surfaces a request flag as a bare StatusError.
+func TestBus_WriteRegister_ErrorShape(t *testing.T) {
+	mock := &transports.MockTransport{ReadData: errPacket(1, byte(ErrChecksum))}
+	bus := newTestBus(t, mock)
+	defer bus.Close()
+
+	data := bus.Protocol().EncodeWord(2048)
+	werr := bus.WriteRegister(context.Background(), 1, RegGoalPosition.Address, data)
+
+	var statusErr StatusError
+	if !errors.As(werr, &statusErr) {
+		t.Fatalf("expected a bare StatusError in the chain, got %T: %v", werr, werr)
+	}
+}
+
+// TestBus_RegWrite_StatusFlags mirrors TestBus_WriteRegister_StatusFlags for
+// the RegWrite path.
+func TestBus_RegWrite_StatusFlags(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  byte
+		wantErr bool
+	}{
+		{"clean ack", 0x00, false},
+		{"condition flag lands, no error", byte(ErrOverload), false},
+		{"request flag errors", byte(ErrChecksum), true},
+		{"condition+request flags still error", byte(ErrOverload | ErrChecksum), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &transports.MockTransport{ReadData: errPacket(1, tt.status)}
+			bus := newTestBus(t, mock)
+			defer bus.Close()
+
+			err := bus.RegWrite(context.Background(), 1, RegGoalPosition.Address, []byte{0x00, 0x08})
+			if tt.wantErr != (err != nil) {
+				t.Fatalf("RegWrite error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err != nil {
+				if _, ok := ConditionStatus(err); ok {
+					t.Error("ConditionStatus must not vouch for a reg_write error — a write only errors on rejection")
+				}
+			}
+		})
+	}
+}
+
+// TestBus_RegWrite_ErrorShape pins that RegWrite wraps a request flag in a
+// *ServoError carrying the servo ID, the "reg_write" op, and the status.
+func TestBus_RegWrite_ErrorShape(t *testing.T) {
+	mock := &transports.MockTransport{ReadData: errPacket(1, byte(ErrChecksum))}
+	bus := newTestBus(t, mock)
+	defer bus.Close()
+
+	werr := bus.RegWrite(context.Background(), 1, RegGoalPosition.Address, []byte{0x00, 0x08})
+
+	var servoErr *ServoError
+	if !errors.As(werr, &servoErr) {
+		t.Fatalf("expected a *ServoError in the chain, got %T: %v", werr, werr)
+	}
+	if servoErr.ID != 1 {
+		t.Errorf("ServoError.ID: got %d, want 1", servoErr.ID)
+	}
+	if servoErr.Op != "reg_write" {
+		t.Errorf("ServoError.Op: got %q, want %q", servoErr.Op, "reg_write")
+	}
+	if servoErr.Status != ErrChecksum {
+		t.Errorf("ServoError.Status: got %v, want %v", servoErr.Status, ErrChecksum)
+	}
+}
+
 func TestBus_SyncWrite(t *testing.T) {
 	mock := &transports.MockTransport{}
 

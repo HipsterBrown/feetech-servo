@@ -3,6 +3,7 @@ package feetech
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -183,6 +184,248 @@ func TestServo_SetBaudRate_AutoUnlocks(t *testing.T) {
 	}
 }
 
+// TestServo_SetID_ConditionFlagOnTorqueDisable_Proceeds verifies that Task 1's
+// write-tolerant contract flows through SetID's safety step for free:
+// SetTorqueEnabled writes RegTorqueEnable (SRAM, non-EEPROM), which routes
+// through Bus.WriteRegister -> writeRegisterLocked and now returns nil on a
+// condition flag. A flagged torque-disable ack must not abort SetID -- the
+// dance proceeds through unlock, ID write, and re-lock, and the servo's ID
+// is updated.
+func TestServo_SetID_ConditionFlagOnTorqueDisable_Proceeds(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: errPacket(1, byte(ErrOverload))}, // torque-disable, condition flag only
+			{Reply: ackPacket(1)},                    // unlock
+			{Reply: ackPacket(1)},                    // id write
+			{Reply: ackPacket(1)},                    // relock
+		},
+	}
+	bus := newTestBus(t, mock)
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	if err := servo.SetID(context.Background(), 7); err != nil {
+		t.Fatalf("SetID: condition flag on torque-disable must not abort: %v", err)
+	}
+	if servo.ID() != 7 {
+		t.Errorf("servo.ID() = %d, want 7", servo.ID())
+	}
+
+	// The full 4-packet sequence must have been sent: torque-disable, unlock,
+	// id-write, relock.
+	if len(mock.WriteData) != 32 {
+		t.Fatalf("expected 32 bytes (4 packets), got %d: %X", len(mock.WriteData), mock.WriteData)
+	}
+	if mock.WriteData[5] != RegTorqueEnable.Address || mock.WriteData[6] != 0 {
+		t.Errorf("packet 1 not torque-disable: addr=%02X val=%02X", mock.WriteData[5], mock.WriteData[6])
+	}
+	if mock.WriteData[8+5] != 55 || mock.WriteData[8+6] != 0 {
+		t.Errorf("packet 2 not unlock: addr=%02X val=%02X", mock.WriteData[8+5], mock.WriteData[8+6])
+	}
+	if mock.WriteData[16+5] != RegID.Address || mock.WriteData[16+6] != 7 {
+		t.Errorf("packet 3 not id write: addr=%02X val=%02X", mock.WriteData[16+5], mock.WriteData[16+6])
+	}
+	if mock.WriteData[24+5] != 55 || mock.WriteData[24+6] != 1 {
+		t.Errorf("packet 4 not relock: addr=%02X val=%02X", mock.WriteData[24+5], mock.WriteData[24+6])
+	}
+}
+
+// TestServo_SetID_RejectionOnTorqueDisable_Aborts pins the half of the
+// contract that must keep working: a rejection flag (checksum/instruction/
+// range, not a condition flag) on the torque-disable ack means the servo
+// genuinely did not accept the instruction, so SetID must still abort with
+// "failed to disable torque" and never transmit the unlock or ID-write
+// packets.
+func TestServo_SetID_RejectionOnTorqueDisable_Aborts(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: errPacket(1, byte(ErrChecksum))}, // torque-disable, rejected
+		},
+	}
+	bus := newTestBus(t, mock)
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	err := servo.SetID(context.Background(), 7)
+	if err == nil {
+		t.Fatal("expected SetID to abort on a rejected torque-disable")
+	}
+	if !strings.Contains(err.Error(), "failed to disable torque") {
+		t.Errorf("error = %v, want it to mention %q", err, "failed to disable torque")
+	}
+	if !errors.Is(err, ErrChecksum) {
+		t.Errorf("expected ErrChecksum in error chain, got: %v", err)
+	}
+	if servo.ID() != 1 {
+		t.Errorf("servo.ID() = %d, want unchanged 1", servo.ID())
+	}
+
+	// Only the torque-disable packet should have been sent -- unlock and the
+	// ID write must never be transmitted.
+	if len(mock.WriteData) != 8 {
+		t.Fatalf("expected 8 bytes (torque-disable only, aborted), got %d: %X", len(mock.WriteData), mock.WriteData)
+	}
+}
+
+// TestServo_SetID_RelockRejected_IDStillUpdated is the regression this task
+// fixes: the target ID write lands cleanly, but the re-lock ack carries a
+// genuine rejection flag. writeEEPROM returns a wrapped errRelockFailed, and
+// SetID must still update s.id -- the physical servo answered to newID even
+// though the cleanup step failed.
+func TestServo_SetID_RelockRejected_IDStillUpdated(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: ackPacket(1)},                    // torque-disable
+			{Reply: ackPacket(1)},                    // unlock
+			{Reply: ackPacket(1)},                    // id write -- lands cleanly
+			{Reply: errPacket(1, byte(ErrChecksum))}, // relock -- rejected
+		},
+	}
+	bus := newTestBus(t, mock)
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	err := servo.SetID(context.Background(), 7)
+	if err == nil {
+		t.Fatal("expected SetID to return an error when the relock is rejected")
+	}
+	if !errors.Is(err, errRelockFailed) {
+		t.Errorf("expected errors.Is(err, errRelockFailed), got: %v", err)
+	}
+	if servo.ID() != 7 {
+		t.Errorf("servo.ID() = %d, want 7 (the ID write landed; only the relock cleanup failed)", servo.ID())
+	}
+}
+
+// TestServo_SetID_TargetWriteRejected_IDUnchanged pins the case that must
+// keep working: the target ID write itself is rejected (relock clean), so
+// the servo never changed ID and s.id must not be updated.
+func TestServo_SetID_TargetWriteRejected_IDUnchanged(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: ackPacket(1)},                    // torque-disable
+			{Reply: ackPacket(1)},                    // unlock
+			{Reply: errPacket(1, byte(ErrChecksum))}, // id write -- rejected
+			{Reply: ackPacket(1)},                    // relock -- clean
+		},
+	}
+	bus := newTestBus(t, mock)
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	err := servo.SetID(context.Background(), 7)
+	if err == nil {
+		t.Fatal("expected SetID to return an error when the target write is rejected")
+	}
+	if servo.ID() != 1 {
+		t.Errorf("servo.ID() = %d, want unchanged 1", servo.ID())
+	}
+}
+
+// TestServo_SetID_TargetAndRelockRejected_IDUnchanged pins the errors.Join
+// interaction: when BOTH the target write and the relock are rejected,
+// writeEEPROM returns errors.Join(writeErr, relockErr) without ever wrapping
+// errRelockFailed, so errors.Is(err, errRelockFailed) must be false here --
+// unlike the relock-only-failure case, the ID genuinely did not change.
+func TestServo_SetID_TargetAndRelockRejected_IDUnchanged(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: ackPacket(1)},                       // torque-disable
+			{Reply: ackPacket(1)},                       // unlock
+			{Reply: errPacket(1, byte(ErrChecksum))},    // id write -- rejected
+			{Reply: errPacket(1, byte(ErrInstruction))}, // relock -- also rejected
+		},
+	}
+	bus := newTestBus(t, mock)
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	err := servo.SetID(context.Background(), 7)
+	if err == nil {
+		t.Fatal("expected SetID to return an error when both the target write and relock are rejected")
+	}
+	if errors.Is(err, errRelockFailed) {
+		t.Errorf("errors.Is(err, errRelockFailed) = true, want false: the target write also failed, so the ID did not change: %v", err)
+	}
+	if servo.ID() != 1 {
+		t.Errorf("servo.ID() = %d, want unchanged 1", servo.ID())
+	}
+}
+
+// TestServo_SetBaudRate_ConditionFlagOnTorqueDisable_Proceeds mirrors
+// TestServo_SetID_ConditionFlagOnTorqueDisable_Proceeds for SetBaudRate.
+func TestServo_SetBaudRate_ConditionFlagOnTorqueDisable_Proceeds(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: errPacket(1, byte(ErrOverload))}, // torque-disable, condition flag only
+			{Reply: ackPacket(1)},                    // unlock
+			{Reply: ackPacket(1)},                    // baud-rate write
+			{Reply: ackPacket(1)},                    // relock
+		},
+	}
+	bus := newTestBus(t, mock)
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	// 1000000 baud = index 0 in DefaultBaudRates.
+	if err := servo.SetBaudRate(context.Background(), 1000000); err != nil {
+		t.Fatalf("SetBaudRate: condition flag on torque-disable must not abort: %v", err)
+	}
+
+	if len(mock.WriteData) != 32 {
+		t.Fatalf("expected 32 bytes (4 packets), got %d: %X", len(mock.WriteData), mock.WriteData)
+	}
+	if mock.WriteData[5] != RegTorqueEnable.Address || mock.WriteData[6] != 0 {
+		t.Errorf("packet 1 not torque-disable: addr=%02X val=%02X", mock.WriteData[5], mock.WriteData[6])
+	}
+	if mock.WriteData[8+5] != 55 || mock.WriteData[8+6] != 0 {
+		t.Errorf("packet 2 not unlock: addr=%02X val=%02X", mock.WriteData[8+5], mock.WriteData[8+6])
+	}
+	if mock.WriteData[16+5] != RegBaudRate.Address || mock.WriteData[16+6] != 0 {
+		t.Errorf("packet 3 not baud write: addr=%02X val=%02X", mock.WriteData[16+5], mock.WriteData[16+6])
+	}
+	if mock.WriteData[24+5] != 55 || mock.WriteData[24+6] != 1 {
+		t.Errorf("packet 4 not relock: addr=%02X val=%02X", mock.WriteData[24+5], mock.WriteData[24+6])
+	}
+}
+
+// TestServo_SetBaudRate_RejectionOnTorqueDisable_Aborts mirrors
+// TestServo_SetID_RejectionOnTorqueDisable_Aborts for SetBaudRate.
+func TestServo_SetBaudRate_RejectionOnTorqueDisable_Aborts(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Reply: errPacket(1, byte(ErrChecksum))}, // torque-disable, rejected
+		},
+	}
+	bus := newTestBus(t, mock)
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	err := servo.SetBaudRate(context.Background(), 1000000)
+	if err == nil {
+		t.Fatal("expected SetBaudRate to abort on a rejected torque-disable")
+	}
+	if !strings.Contains(err.Error(), "failed to disable torque") {
+		t.Errorf("error = %v, want it to mention %q", err, "failed to disable torque")
+	}
+	if !errors.Is(err, ErrChecksum) {
+		t.Errorf("expected ErrChecksum in error chain, got: %v", err)
+	}
+
+	// Only the torque-disable packet should have been sent -- unlock and the
+	// baud-rate write must never be transmitted.
+	if len(mock.WriteData) != 8 {
+		t.Fatalf("expected 8 bytes (torque-disable only, aborted), got %d: %X", len(mock.WriteData), mock.WriteData)
+	}
+}
+
 // TestServo_SetPositionLimits_AutoUnlocks verifies that each of the two
 // register writes (min and max angle limits) is wrapped in its own dance.
 // Total: 2 dances × 3 packets = 6 packets.
@@ -253,14 +496,20 @@ func errPacket(id byte, errFlag byte) []byte {
 	return []byte{0xFF, 0xFF, id, 0x02, errFlag, chk}
 }
 
-// TestServo_WriteEEPROM_RelocksOnWriteError verifies that when the target write
-// fails (servo returns a status error), the re-lock packet is still sent.
-func TestServo_WriteEEPROM_RelocksOnWriteError(t *testing.T) {
+// TestServo_WriteEEPROM_ToleratesConditionFlagOnWrite verifies that when the
+// target write's ack carries a condition flag (overload/overheat/voltage/
+// angle limit), the write is treated as landed — not an error — and the
+// re-lock still runs normally. Renamed from the old
+// TestServo_WriteEEPROM_RelocksOnWriteError, which asserted the pre-Task-1
+// contract (any flag = error). Hardware evidence (see bus.go) showed a
+// condition flag on a write ack does not mean the write was rejected, so this
+// scenario no longer produces an error at all.
+func TestServo_WriteEEPROM_ToleratesConditionFlagOnWrite(t *testing.T) {
 	mock := &transports.MockTransport{}
 	mock.Script = &transports.Script{
 		Steps: []transports.Step{
 			{Send: nil, Reply: ackPacket(1)},                    // unlock OK
-			{Send: nil, Reply: errPacket(1, byte(ErrOverload))}, // write fails
+			{Send: nil, Reply: errPacket(1, byte(ErrOverload))}, // write, condition flag only
 			{Send: nil, Reply: ackPacket(1)},                    // relock OK
 		},
 	}
@@ -272,14 +521,11 @@ func TestServo_WriteEEPROM_RelocksOnWriteError(t *testing.T) {
 
 	servo := NewServo(bus, 1, nil)
 	werr := servo.WriteRegister(context.Background(), "id", []byte{5})
-	if werr == nil {
-		t.Fatal("expected error from write step")
-	}
-	if !errors.Is(werr, ErrOverload) {
-		t.Errorf("expected ErrOverload in chain, got %v", werr)
+	if werr != nil {
+		t.Fatalf("condition flag on write ack must not error: %v", werr)
 	}
 
-	// Verify all three packets were sent (unlock, write attempt, re-lock).
+	// Verify all three packets were sent (unlock, write, re-lock).
 	if len(mock.WriteData) != 24 {
 		t.Errorf("expected 24 bytes (3 packets), got %d: %X", len(mock.WriteData), mock.WriteData)
 	}
@@ -289,15 +535,17 @@ func TestServo_WriteEEPROM_RelocksOnWriteError(t *testing.T) {
 	}
 }
 
-// TestServo_WriteEEPROM_JoinedErrorOnRelockError verifies that when the relock
-// returns an error status, that error surfaces through the returned error.
-func TestServo_WriteEEPROM_JoinedErrorOnRelockError(t *testing.T) {
+// TestServo_WriteEEPROM_ToleratesConditionFlagOnRelock verifies that when the
+// relock ack carries a condition flag, that's tolerated too — the relock
+// landed. Renamed from the old TestServo_WriteEEPROM_JoinedErrorOnRelockError,
+// which asserted the pre-Task-1 contract.
+func TestServo_WriteEEPROM_ToleratesConditionFlagOnRelock(t *testing.T) {
 	mock := &transports.MockTransport{}
 	mock.Script = &transports.Script{
 		Steps: []transports.Step{
 			{Send: nil, Reply: ackPacket(1)},                    // unlock OK
 			{Send: nil, Reply: ackPacket(1)},                    // write OK
-			{Send: nil, Reply: errPacket(1, byte(ErrOverheat))}, // relock fails
+			{Send: nil, Reply: errPacket(1, byte(ErrOverheat))}, // relock, condition flag only
 		},
 	}
 	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
@@ -308,23 +556,26 @@ func TestServo_WriteEEPROM_JoinedErrorOnRelockError(t *testing.T) {
 
 	servo := NewServo(bus, 1, nil)
 	werr := servo.WriteRegister(context.Background(), "id", []byte{5})
-	if werr == nil {
-		t.Fatal("expected error from relock step")
-	}
-	if !errors.Is(werr, ErrOverheat) {
-		t.Errorf("expected ErrOverheat in chain, got %v", werr)
+	if werr != nil {
+		t.Fatalf("condition flag on relock ack must not error: %v", werr)
 	}
 }
 
-// TestServo_WriteEEPROM_BothFailJoined exercises the errors.Join branch where
-// BOTH the write and the re-lock fail.
-func TestServo_WriteEEPROM_BothFailJoined(t *testing.T) {
+// TestServo_WriteEEPROM_ToleratesConditionFlagsOnBothSteps covers write and
+// relock each carrying their own (different) condition flag. Renamed from the
+// old TestServo_WriteEEPROM_BothFailJoined, which exercised the errors.Join
+// branch in writeEEPROM for a "both steps fail" scenario. Under the new
+// write-tolerant contract, a lone condition flag is never a failure, so that
+// scenario can no longer be constructed this way — both steps report nil and
+// errors.Join is never reached. Coverage of the Join branch itself belongs to
+// a genuine (request-flag) failure scenario, which is outside this task.
+func TestServo_WriteEEPROM_ToleratesConditionFlagsOnBothSteps(t *testing.T) {
 	mock := &transports.MockTransport{}
 	mock.Script = &transports.Script{
 		Steps: []transports.Step{
 			{Send: nil, Reply: ackPacket(1)},                    // unlock OK
-			{Send: nil, Reply: errPacket(1, byte(ErrOverload))}, // write fails
-			{Send: nil, Reply: errPacket(1, byte(ErrOverheat))}, // relock fails
+			{Send: nil, Reply: errPacket(1, byte(ErrOverload))}, // write, condition flag only
+			{Send: nil, Reply: errPacket(1, byte(ErrOverheat))}, // relock, condition flag only
 		},
 	}
 	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
@@ -335,15 +586,8 @@ func TestServo_WriteEEPROM_BothFailJoined(t *testing.T) {
 
 	servo := NewServo(bus, 1, nil)
 	werr := servo.WriteRegister(context.Background(), "id", []byte{5})
-	if werr == nil {
-		t.Fatal("expected error")
-	}
-	// errors.Join walks both branches.
-	if !errors.Is(werr, ErrOverload) {
-		t.Errorf("expected ErrOverload (write error) in chain, got %v", werr)
-	}
-	if !errors.Is(werr, ErrOverheat) {
-		t.Errorf("expected ErrOverheat (relock error) in chain, got %v", werr)
+	if werr != nil {
+		t.Fatalf("condition flags on both steps must not error: %v", werr)
 	}
 
 	// All three packets should still have been sent.
@@ -352,13 +596,50 @@ func TestServo_WriteEEPROM_BothFailJoined(t *testing.T) {
 	}
 }
 
-// TestServo_WriteEEPROM_UnlockFailDoesNotWrite verifies that when the unlock
-// itself fails, no further packets are sent and the unlock error is returned.
-func TestServo_WriteEEPROM_UnlockFailDoesNotWrite(t *testing.T) {
+// TestServo_WriteEEPROM_ToleratesConditionFlagOnUnlock verifies that a
+// condition flag on the unlock ack does not abort the dance: the unlock
+// genuinely landed (hardware evidence: the lock register read back 0 despite
+// the flagged ack), so the write and re-lock still proceed. Renamed from the
+// old TestServo_WriteEEPROM_UnlockFailDoesNotWrite, which asserted the
+// pre-Task-1 contract that any flag on the unlock step aborts the dance.
+func TestServo_WriteEEPROM_ToleratesConditionFlagOnUnlock(t *testing.T) {
 	mock := &transports.MockTransport{}
 	mock.Script = &transports.Script{
 		Steps: []transports.Step{
-			{Send: nil, Reply: errPacket(1, byte(ErrOverheat))}, // unlock fails
+			{Send: nil, Reply: errPacket(1, byte(ErrOverheat))}, // unlock, condition flag only
+			{Send: nil, Reply: ackPacket(1)},                    // write OK
+			{Send: nil, Reply: ackPacket(1)},                    // relock OK
+		},
+	}
+	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	defer bus.Close()
+
+	servo := NewServo(bus, 1, nil)
+	werr := servo.WriteRegister(context.Background(), "id", []byte{5})
+	if werr != nil {
+		t.Fatalf("condition flag on unlock ack must not error: %v", werr)
+	}
+	// All three packets should have been sent — the dance was not aborted.
+	if len(mock.WriteData) != 24 {
+		t.Errorf("expected 24 bytes (3 packets), got %d: %X", len(mock.WriteData), mock.WriteData)
+	}
+}
+
+// TestServo_WriteEEPROM_RejectionAbortsUnlock verifies that when the unlock
+// write itself is rejected (a request flag -- checksum/instruction/range, not
+// a condition flag), writeEEPROM aborts immediately: neither the target write
+// nor the relock packet is sent, and the error propagates. Restores coverage
+// of servo.go:446-448 ("abort — no further packets are sent"), which the four
+// Tolerates* tests above no longer exercise because they now script condition
+// flags, which never abort the dance under the new write-tolerant contract.
+func TestServo_WriteEEPROM_RejectionAbortsUnlock(t *testing.T) {
+	mock := &transports.MockTransport{}
+	mock.Script = &transports.Script{
+		Steps: []transports.Step{
+			{Send: nil, Reply: errPacket(1, byte(ErrChecksum))}, // unlock rejected
 		},
 	}
 	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
@@ -370,14 +651,94 @@ func TestServo_WriteEEPROM_UnlockFailDoesNotWrite(t *testing.T) {
 	servo := NewServo(bus, 1, nil)
 	werr := servo.WriteRegister(context.Background(), "id", []byte{5})
 	if werr == nil {
-		t.Fatal("expected unlock error")
+		t.Fatal("expected error when unlock is rejected")
 	}
-	if !errors.Is(werr, ErrOverheat) {
-		t.Errorf("expected ErrOverheat in chain, got %v", werr)
+	if !errors.Is(werr, ErrChecksum) {
+		t.Errorf("expected ErrChecksum in error chain, got: %v", werr)
 	}
-	// Only the unlock packet should have been written.
+	// Only the unlock packet (8 bytes) should have been sent -- the dance
+	// aborted before the target write or the relock.
 	if len(mock.WriteData) != 8 {
-		t.Errorf("expected 8 bytes (1 unlock packet only), got %d: %X", len(mock.WriteData), mock.WriteData)
+		t.Errorf("expected 8 bytes (unlock only, dance aborted), got %d: %X", len(mock.WriteData), mock.WriteData)
+	}
+}
+
+// TestServo_WriteEEPROM_RejectionErrors covers the three ways a completed
+// dance (unlock always succeeds) can still return an error under the
+// write-tolerant contract: a rejection flag (checksum/instruction/range) on
+// the target write, on the relock, or on both. In every case the relock
+// packet is still sent -- restoring the "relock is always attempted" pin from
+// servo.go:453 alongside the specific return-value branches at
+// servo.go:458 (both failed -> errors.Join), :460 (write failed only), and
+// :462 (relock failed only). The condition-flag versions of these scenarios
+// no longer error at all post-Task-1, which is what dropped this coverage.
+func TestServo_WriteEEPROM_RejectionErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		writeFlag  StatusError // 0 = clean ack
+		relockFlag StatusError // 0 = clean ack
+		wantFlags  []StatusError
+	}{
+		{
+			name:      "target write rejected, relock clean",
+			writeFlag: ErrChecksum,
+			wantFlags: []StatusError{ErrChecksum},
+		},
+		{
+			name:       "target write clean, relock rejected",
+			relockFlag: ErrChecksum,
+			wantFlags:  []StatusError{ErrChecksum},
+		},
+		{
+			name:       "both target write and relock rejected",
+			writeFlag:  ErrChecksum,
+			relockFlag: ErrInstruction,
+			wantFlags:  []StatusError{ErrChecksum, ErrInstruction},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			writeReply := ackPacket(1)
+			if tt.writeFlag != 0 {
+				writeReply = errPacket(1, byte(tt.writeFlag))
+			}
+			relockReply := ackPacket(1)
+			if tt.relockFlag != 0 {
+				relockReply = errPacket(1, byte(tt.relockFlag))
+			}
+
+			mock := &transports.MockTransport{}
+			mock.Script = &transports.Script{
+				Steps: []transports.Step{
+					{Send: nil, Reply: ackPacket(1)}, // unlock OK
+					{Send: nil, Reply: writeReply},
+					{Send: nil, Reply: relockReply},
+				},
+			}
+			bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
+			if err != nil {
+				t.Fatalf("NewBus: %v", err)
+			}
+			defer bus.Close()
+
+			servo := NewServo(bus, 1, nil)
+			werr := servo.WriteRegister(context.Background(), "id", []byte{5})
+			if werr == nil {
+				t.Fatal("expected error")
+			}
+			for _, flag := range tt.wantFlags {
+				if !errors.Is(werr, flag) {
+					t.Errorf("expected %v in error chain, got: %v", flag, werr)
+				}
+			}
+			// The relock is always attempted, even when the target write
+			// failed -- all three packets must have been sent regardless of
+			// which step(s) reported a rejection.
+			if len(mock.WriteData) != 24 {
+				t.Errorf("expected 24 bytes (3 packets), got %d: %X", len(mock.WriteData), mock.WriteData)
+			}
+		})
 	}
 }
 
