@@ -463,8 +463,13 @@ func (s *Servo) writeEEPROM(ctx context.Context, address byte, data []byte) erro
 	// Step 2: target write.
 	writeErr := s.bus.WriteRegister(ctx, s.id, address, data)
 
-	// Step 3: re-lock. Always attempted, even if step 2 failed.
-	relockErr := s.bus.WriteRegister(ctx, s.id, s.model.LockAddress, []byte{1})
+	// Step 3: re-lock. Always attempted, even if step 2 failed. A landed ID
+	// write means the servo now only answers to the new ID.
+	relockID := s.id
+	if writeErr == nil && address == RegID.Address {
+		relockID = int(data[0])
+	}
+	relockErr := s.bus.WriteRegister(ctx, relockID, s.model.LockAddress, []byte{1})
 
 	switch {
 	case writeErr != nil && relockErr != nil:
