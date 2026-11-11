@@ -28,7 +28,7 @@ func TestServo_WriteRegister_AutoUnlocksEEPROM(t *testing.T) {
 			// Step 2: target write (write 5 to addr 5 = ID register).
 			{Send: nil, Reply: ackPacket(1)},
 			// Step 3: re-lock (write 1 to addr 55).
-			{Send: nil, Reply: ackPacket(1)},
+			{Send: nil, Reply: ackPacket(5)},
 		},
 	}
 
@@ -108,12 +108,14 @@ func TestServo_WriteRegister_NoUnlockForSRAM(t *testing.T) {
 
 // TestServo_SetID_AutoUnlocks confirms SetID performs the dance after disabling torque.
 // Sequence: torque-disable (addr 40 = 0) → unlock (addr 55 = 0) → id-write (addr 5 = 7) → relock (addr 55 = 1).
+// The relock must go to the NEW ID: the servo stops answering to the old one
+// as soon as the ID write lands.
 func TestServo_SetID_AutoUnlocks(t *testing.T) {
 	mock := &transports.MockTransport{}
 	mock.Script = &transports.Script{
 		Steps: []transports.Step{
 			{Reply: ackPacket(1)}, {Reply: ackPacket(1)},
-			{Reply: ackPacket(1)}, {Reply: ackPacket(1)},
+			{Reply: ackPacket(1)}, {Reply: ackPacket(7)},
 		},
 	}
 	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
@@ -146,6 +148,9 @@ func TestServo_SetID_AutoUnlocks(t *testing.T) {
 	// Packet 4: re-lock (addr 55, val 1).
 	if mock.WriteData[24+5] != 55 || mock.WriteData[24+6] != 1 {
 		t.Errorf("packet 4: addr=%02X val=%02X want 37 01", mock.WriteData[24+5], mock.WriteData[24+6])
+	}
+	if mock.WriteData[24+2] != 7 {
+		t.Errorf("packet 4: sent to ID %d, want new ID 7", mock.WriteData[24+2])
 	}
 }
 
@@ -198,7 +203,7 @@ func TestServo_SetID_ConditionFlagOnTorqueDisable_Proceeds(t *testing.T) {
 			{Reply: errPacket(1, byte(ErrOverload))}, // torque-disable, condition flag only
 			{Reply: ackPacket(1)},                    // unlock
 			{Reply: ackPacket(1)},                    // id write
-			{Reply: ackPacket(1)},                    // relock
+			{Reply: ackPacket(7)},                    // relock (at new ID)
 		},
 	}
 	bus := newTestBus(t, mock)
@@ -281,7 +286,7 @@ func TestServo_SetID_RelockRejected_IDStillUpdated(t *testing.T) {
 			{Reply: ackPacket(1)},                    // torque-disable
 			{Reply: ackPacket(1)},                    // unlock
 			{Reply: ackPacket(1)},                    // id write -- lands cleanly
-			{Reply: errPacket(1, byte(ErrChecksum))}, // relock -- rejected
+			{Reply: errPacket(7, byte(ErrChecksum))}, // relock (at new ID) -- rejected
 		},
 	}
 	bus := newTestBus(t, mock)
@@ -510,7 +515,7 @@ func TestServo_WriteEEPROM_ToleratesConditionFlagOnWrite(t *testing.T) {
 		Steps: []transports.Step{
 			{Send: nil, Reply: ackPacket(1)},                    // unlock OK
 			{Send: nil, Reply: errPacket(1, byte(ErrOverload))}, // write, condition flag only
-			{Send: nil, Reply: ackPacket(1)},                    // relock OK
+			{Send: nil, Reply: ackPacket(5)},                    // relock OK
 		},
 	}
 	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
@@ -545,7 +550,7 @@ func TestServo_WriteEEPROM_ToleratesConditionFlagOnRelock(t *testing.T) {
 		Steps: []transports.Step{
 			{Send: nil, Reply: ackPacket(1)},                    // unlock OK
 			{Send: nil, Reply: ackPacket(1)},                    // write OK
-			{Send: nil, Reply: errPacket(1, byte(ErrOverheat))}, // relock, condition flag only
+			{Send: nil, Reply: errPacket(5, byte(ErrOverheat))}, // relock, condition flag only
 		},
 	}
 	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
@@ -575,7 +580,7 @@ func TestServo_WriteEEPROM_ToleratesConditionFlagsOnBothSteps(t *testing.T) {
 		Steps: []transports.Step{
 			{Send: nil, Reply: ackPacket(1)},                    // unlock OK
 			{Send: nil, Reply: errPacket(1, byte(ErrOverload))}, // write, condition flag only
-			{Send: nil, Reply: errPacket(1, byte(ErrOverheat))}, // relock, condition flag only
+			{Send: nil, Reply: errPacket(5, byte(ErrOverheat))}, // relock, condition flag only
 		},
 	}
 	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
@@ -608,7 +613,7 @@ func TestServo_WriteEEPROM_ToleratesConditionFlagOnUnlock(t *testing.T) {
 		Steps: []transports.Step{
 			{Send: nil, Reply: errPacket(1, byte(ErrOverheat))}, // unlock, condition flag only
 			{Send: nil, Reply: ackPacket(1)},                    // write OK
-			{Send: nil, Reply: ackPacket(1)},                    // relock OK
+			{Send: nil, Reply: ackPacket(5)},                    // relock OK
 		},
 	}
 	bus, err := NewBus(BusConfig{Transport: mock, Timeout: 100 * time.Millisecond})
@@ -703,9 +708,14 @@ func TestServo_WriteEEPROM_RejectionErrors(t *testing.T) {
 			if tt.writeFlag != 0 {
 				writeReply = errPacket(1, byte(tt.writeFlag))
 			}
-			relockReply := ackPacket(1)
+			// The relock goes to the new ID only if the ID write landed.
+			relockID := byte(5)
+			if tt.writeFlag != 0 {
+				relockID = 1
+			}
+			relockReply := ackPacket(relockID)
 			if tt.relockFlag != 0 {
-				relockReply = errPacket(1, byte(tt.relockFlag))
+				relockReply = errPacket(relockID, byte(tt.relockFlag))
 			}
 
 			mock := &transports.MockTransport{}
@@ -748,7 +758,7 @@ func TestServo_SCS_LockUsesAddr48(t *testing.T) {
 	mock := &transports.MockTransport{}
 	mock.Script = &transports.Script{
 		Steps: []transports.Step{
-			{Reply: ackPacket(1)}, {Reply: ackPacket(1)}, {Reply: ackPacket(1)},
+			{Reply: ackPacket(1)}, {Reply: ackPacket(1)}, {Reply: ackPacket(5)},
 		},
 	}
 	bus, err := NewBus(BusConfig{
